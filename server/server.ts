@@ -957,15 +957,12 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 	return result;
 }
 
-function performAuthentication(this: Socket, data: AuthPerformData) {
-	if (!_.isPlainObject(data)) {
-		return;
-	}
-
-	const socket = this;
-	let client: Client | undefined;
-	let token: string;
-
+function completeAuthenticatedClient(
+	socket: Socket,
+	client: Client,
+	token: string,
+	data: AuthPerformData
+) {
 	const finalInit = () => {
 		let lastMessage = -1;
 
@@ -981,50 +978,48 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			openChannel = data.openChannel;
 		}
 
-		// TODO: remove this once the logic is cleaned up
-		if (!client) {
-			throw new Error("finalInit called with undefined client, this is a bug");
-		}
-
 		initializeClient(socket, client, token, lastMessage, openChannel);
 	};
 
-	const initClient = () => {
-		if (!client) {
-			throw new Error("initClient called with undefined client");
-		}
+	// Configuration does not change during runtime of TL,
+	// and the client listens to this event only once
+	if (data && (!("hasConfig" in data) || !data.hasConfig)) {
+		socket.emit("configuration", getClientConfiguration());
 
-		// Configuration does not change during runtime of TL,
-		// and the client listens to this event only once
-		if (data && (!("hasConfig" in data) || !data.hasConfig)) {
-			socket.emit("configuration", getClientConfiguration());
+		socket.emit(
+			"push:issubscribed",
+			token && client.config.sessions[token].pushSubscription ? true : false
+		);
+	}
 
-			socket.emit(
-				"push:issubscribed",
-				token && client.config.sessions[token].pushSubscription ? true : false
-			);
-		}
+	const clientIP = getClientIp(socket);
 
-		const clientIP = getClientIp(socket);
-
-		client.config.browser = {
-			ip: clientIP,
-			isSecure: getClientSecure(socket),
-			language: getClientLanguage(socket),
-		};
-
-		// If webirc is enabled perform reverse dns lookup
-		if (Config.values.webirc === null) {
-			return finalInit();
-		}
-
-		const cb_client = client; // ensure that TS figures out that client can't be nil
-		reverseDnsLookup(clientIP, (hostname) => {
-			cb_client.config.browser!.hostname = hostname;
-
-			finalInit();
-		});
+	client.config.browser = {
+		ip: clientIP,
+		isSecure: getClientSecure(socket),
+		language: getClientLanguage(socket),
 	};
+
+	// If webirc is enabled perform reverse dns lookup
+	if (Config.values.webirc === null) {
+		return finalInit();
+	}
+
+	reverseDnsLookup(clientIP, (hostname) => {
+		client.config.browser!.hostname = hostname;
+
+		finalInit();
+	});
+}
+
+function performAuthentication(this: Socket, data: AuthPerformData) {
+	if (!_.isPlainObject(data)) {
+		return;
+	}
+
+	const socket = this;
+	let client: Client | undefined;
+	let token = "";
 
 	if (Config.values.public) {
 		client = new Client(manager!);
@@ -1037,7 +1032,7 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			cb_client.quit();
 		});
 
-		initClient();
+		completeAuthenticatedClient(socket, client, token, data);
 
 		return;
 	}
@@ -1077,7 +1072,7 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			}
 		}
 
-		initClient();
+		completeAuthenticatedClient(socket, client, token, data);
 	};
 
 	client = manager!.findClient(data.user);
