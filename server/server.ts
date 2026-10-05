@@ -17,7 +17,11 @@ import Config from "./config";
 import Identification from "./identification";
 import changelog from "./plugins/changelog";
 import inputs from "./plugins/inputs";
-import Auth from "./plugins/auth";
+import Auth, {getAuthMethod} from "./plugins/auth";
+import {validateOidcConfig} from "./plugins/auth/oidc/protocol";
+import {transitionAuthMode} from "./plugins/auth/oidc/transition";
+import {completeOidc, registerOidcRoutes} from "./plugins/auth/oidc";
+import {getOidcAccounts} from "./plugins/auth/oidc/accounts";
 import {VALID_TYPING_STATUSES} from "../shared/types/typing";
 import {injectServerConfig} from "./plugins/html-config";
 
@@ -74,6 +78,20 @@ export default async function (
 	})`);
 	log.info(`Configuration file: ${colors.green(Config.getConfigPath())}`);
 
+	try {
+		validateOidcConfig();
+		transitionAuthMode(getAuthMethod());
+
+		if (getAuthMethod() === "oidc") {
+			getOidcAccounts();
+		}
+	} catch (error) {
+		log.error(
+			"Invalid OIDC authentication configuration or transition state. Stopping server..."
+		);
+		throw error;
+	}
+
 	const staticOptions = {
 		redirect: false,
 		maxAge: 86400 * 1000,
@@ -83,15 +101,20 @@ export default async function (
 
 	isDev = options.dev;
 
+	app.set("env", "production").disable("x-powered-by").use(allRequests).use(addSecurityHeaders);
+
+	if (getAuthMethod() === "oidc") {
+		app.use(express.json({limit: "1kb"}));
+		registerOidcRoutes(app);
+	}
+
+	// Vite's development fallback serves index.html for unknown GET paths.
+	// OIDC callback routes must run first so code/state never reach that fallback.
 	if (options.dev) {
 		await (await import("./plugins/dev-server")).default(app);
 	}
 
-	app.set("env", "production")
-		.disable("x-powered-by")
-		.use(allRequests)
-		.use(addSecurityHeaders)
-		.get("/", indexRequest)
+	app.get("/", indexRequest)
 		.get("/service-worker.js", forceNoCacheRequest)
 		.use(express.static(Utils.getFileFromRelativeToRoot("public"), staticOptions))
 		.use("/storage/", express.static(Config.getStoragePath(), staticOptions));
@@ -234,7 +257,36 @@ export default async function (
 				performAuthentication.call(socket, {});
 			} else {
 				socket.on("auth:perform", performAuthentication);
-				socket.emit("auth:start", serverHash);
+
+				const completeOidcAuthentication = (data, acknowledge) => {
+					if (typeof acknowledge !== "function") {
+						return;
+					}
+
+					if (
+						socket.data.authenticated ||
+						!_.isPlainObject(data) ||
+						typeof data.proof !== "string" ||
+						!manager
+					) {
+						acknowledge({status: "denied"});
+						return;
+					}
+
+					// Claim the socket before any account work or asynchronous reverse-DNS
+					// initialization. A socket gets exactly one authentication attempt.
+					claimAuthenticationSocket(socket);
+
+					const completion = completeOidc(manager, socket.request, data.proof);
+					acknowledge(completion.result);
+
+					if (completion.client) {
+						completeAuthenticatedClient(socket, completion.client, "", {});
+					}
+				};
+
+				socket.on("auth:oidc:complete", completeOidcAuthentication);
+				socket.emit("auth:start", serverHash, {method: getAuthMethod()});
 			}
 		});
 
@@ -431,6 +483,7 @@ function initializeClient(
 	openChannel: number
 ) {
 	socket.off("auth:perform", performAuthentication);
+	socket.data.authenticated = true;
 	socket.emit("auth:success");
 
 	client.clientAttach(socket.id, token);
@@ -548,7 +601,7 @@ function initializeClient(
 		}
 	});
 
-	if (!Config.values.public && !Config.values.ldap.enable) {
+	if (!Config.values.public && getAuthMethod() === "local") {
 		socket.on("change-password", (data) => {
 			if (_.isPlainObject(data)) {
 				const old = data.old_password;
@@ -914,6 +967,7 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 		themes: themes.getAll(),
 		defaultTheme: Config.values.theme,
 		public: Config.values.public,
+		authMethod: getAuthMethod(),
 		useHexIp: Config.values.useHexIp,
 		prefetch: Config.values.prefetch,
 		fileUploadMaxFileSize: Uploader ? Uploader.getMaxFileSize() : undefined, // TODO can't be undefined?
@@ -955,6 +1009,12 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 	};
 
 	return result;
+}
+
+function claimAuthenticationSocket(socket: Socket) {
+	socket.data.authenticated = true;
+	socket.removeAllListeners("auth:perform");
+	socket.removeAllListeners("auth:oidc:complete");
 }
 
 function completeAuthenticatedClient(
@@ -1072,6 +1132,14 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			}
 		}
 
+		if (getAuthMethod() === "oidc") {
+			if (socket.data.authenticated) {
+				return;
+			}
+
+			claimAuthenticationSocket(socket);
+		}
+
 		completeAuthenticatedClient(socket, client, token, data);
 	};
 
@@ -1087,6 +1155,11 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			authCallback(true);
 			return;
 		}
+	}
+
+	if (getAuthMethod() === "oidc") {
+		authCallback(false);
+		return;
 	}
 
 	if (!("user" in data && "password" in data)) {

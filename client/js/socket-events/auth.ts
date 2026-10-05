@@ -3,6 +3,7 @@ import storage from "../localStorage";
 import {router, navigate} from "../router";
 import {store} from "../store";
 import location from "../location";
+import {completeOidc, hasPendingOidcProof} from "../oidc";
 let lastServerHash: number | null = null;
 
 declare global {
@@ -26,7 +27,7 @@ socket.on("auth:failed", async function () {
 	await showSignIn();
 });
 
-socket.on("auth:start", async function (serverHash) {
+socket.on("auth:start", async function (serverHash, bootstrap = {method: "local"}) {
 	// If we reconnected and serverHash differs, that means the server restarted
 	// And we will reload the page to grab the latest version
 	if (lastServerHash && serverHash !== lastServerHash) {
@@ -34,6 +35,22 @@ socket.on("auth:start", async function (serverHash) {
 	}
 
 	lastServerHash = serverHash;
+	store.commit("authMethod", bootstrap.method);
+
+	if (bootstrap.method === "oidc" && hasPendingOidcProof()) {
+		const result = await completeOidc();
+
+		if (result.status !== "authenticated") {
+			store.commit("oidcSignInError", true);
+			store.commit(
+				"currentUserVisibleError",
+				"OpenID Connect sign-in did not complete. Please try again."
+			);
+			await showSignIn();
+		}
+
+		return;
+	}
 
 	const user = storage.get("user");
 	const token = storage.get("token");

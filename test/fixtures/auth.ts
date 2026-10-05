@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import ldap from "ldapjs";
+import net from "net";
 import {io, Socket} from "socket.io-client";
 import {vi} from "vitest";
 
@@ -24,6 +25,12 @@ type Login = {
 type AuthTestAppOptions = {
 	public?: boolean;
 	ldap?: boolean;
+	oidc?: {
+		issuer: string;
+		clientAuthMethod?: "client_secret_basic" | "client_secret_post";
+		additionalAccount?: {name: string; subject: string};
+	};
+	webirc?: boolean;
 };
 
 type PendingLogin = {
@@ -41,10 +48,21 @@ type AuthTestApp = {
 	loginPassword: (user: string, password: string) => Promise<Login>;
 	loginToken: (user: string, token: string) => Promise<Login>;
 	loginPublic: () => Promise<Login>;
+	startOidc: (
+		proof: string,
+		cookie?: string
+	) => Promise<{authorizationUrl: string; cookie: string}>;
+	completeOidc: (
+		authorizationUrl: string,
+		proof: string,
+		cookie: string,
+		afterCallback?: () => void | Promise<void>
+	) => Promise<Login>;
 	loginRejected: (data: Record<string, unknown>) => Promise<void>;
 	readAccount: (user: string) => Record<string, unknown>;
 	disconnect: (socket: Socket) => Promise<void>;
 	flushSaves: () => void;
+	waitForSocketEvent: (event: string) => Promise<void>;
 	stop: () => Promise<void>;
 };
 
@@ -53,6 +71,20 @@ function waitForEvent<T>(socket: Socket, event: string): Promise<T> {
 		socket.once(event, (data: T) => resolve(data));
 		socket.once("connect_error", reject);
 	});
+}
+
+async function getAvailablePort() {
+	const server = net.createServer();
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+
+	if (!address || typeof address === "string") {
+		throw new Error("Could not allocate an OIDC fixture port");
+	}
+
+	const port = address.port;
+	await new Promise<void>((resolve) => server.close(() => resolve()));
+	return port;
 }
 
 function startLdapServer() {
@@ -98,28 +130,48 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 	);
 
 	const ldapServer = options.ldap ? await startLdapServer() : undefined;
+	const oidcPort = options.oidc ? await getAvailablePort() : 0;
 
 	vi.resetModules();
 
-	const [{default: Config}, {default: createServer}, {default: Client}, {default: changelog}] =
-		await Promise.all([
-			import("../../server/config"),
-			import("../../server/server"),
-			import("../../server/client"),
-			import("../../server/plugins/changelog"),
-		]);
+	const [
+		{default: Config},
+		{default: createServer},
+		{default: Client},
+		{default: ClientManager},
+		{default: changelog},
+	] = await Promise.all([
+		import("../../server/config"),
+		import("../../server/server"),
+		import("../../server/client"),
+		import("../../server/clientManager"),
+		import("../../server/plugins/changelog"),
+	]);
 	const checkForUpdates = vi
 		.spyOn(changelog, "checkForUpdates")
 		.mockImplementation(() => undefined);
+	const managerInit = vi.spyOn(ClientManager.prototype, "init");
 
 	Config.setHome(home);
 	Config.values.host = "127.0.0.1";
-	Config.values.port = 0;
+	Config.values.port = oidcPort;
 	Config.values.public = Boolean(options.public);
 	Config.values.prefetch = false;
 	Config.values.prefetchStorage = false;
 	Config.values.transports = ["websocket"];
+	Config.values.webirc = options.webirc ? ({} as any) : null;
 	Config.values.ldap.enable = Boolean(options.ldap);
+	Config.values.oidc.enable = Boolean(options.oidc);
+
+	if (options.oidc) {
+		Config.values.oidc.issuer = options.oidc.issuer;
+		Config.values.oidc.callbackUrl = `http://127.0.0.1:${oidcPort}/auth/oidc/callback`;
+		Config.values.oidc.clientId = "lounge";
+		Config.values.oidc.clientSecret = "secret";
+		Config.values.oidc.scope = "openid profile";
+		Config.values.oidc.clientAuthMethod =
+			options.oidc.clientAuthMethod ?? "client_secret_basic";
+	}
 
 	if (ldapServer) {
 		Config.values.ldap.url = ldapServer.url;
@@ -127,6 +179,23 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 		Config.values.ldap.baseDN = "ou=accounts,dc=example,dc=com";
 	} else if (!options.public) {
 		writeLocalAccount(home, "alice", "correct-password");
+
+		if (options.oidc) {
+			const bindings = [{name: "alice", subject: "alice-subject"}];
+
+			if (options.oidc.additionalAccount) {
+				const binding = options.oidc.additionalAccount;
+				writeLocalAccount(home, binding.name, "correct-password");
+				bindings.push(binding);
+			}
+
+			for (const binding of bindings) {
+				const accountPath = path.join(usersPath, `${binding.name}.json`);
+				const account = JSON.parse(fs.readFileSync(accountPath, "utf8"));
+				account.oidc = {issuer: options.oidc.issuer, subject: binding.subject};
+				fs.writeFileSync(accountPath, JSON.stringify(account));
+			}
+		}
 	}
 
 	const attachedClients = new Set<InstanceType<typeof Client>>();
@@ -196,7 +265,29 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 	}
 
 	const url = `http://127.0.0.1:${address.port}`;
+	const socketServer = managerInit.mock.calls[0]?.[1];
+
+	if (!socketServer) {
+		throw new Error("The Lounge fixture did not initialize Socket.IO");
+	}
+
 	const sockets = new Set<Socket>();
+	const waitForSocketEvent = (event: string) =>
+		new Promise<void>((resolve) => {
+			const observe = (socket) => {
+				socket.onAny((receivedEvent) => {
+					if (receivedEvent === event) {
+						resolve();
+					}
+				});
+			};
+
+			for (const socket of socketServer.sockets.sockets.values()) {
+				observe(socket);
+			}
+
+			socketServer.on("connection", observe);
+		});
 
 	function connect(auth?: Record<string, unknown>) {
 		const socket = io(url, {
@@ -310,6 +401,65 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 				pushSubscribed: await login.pushSubscribed,
 			};
 		},
+		async startOidc(proof, existingCookie) {
+			const response = await fetch(`${url}/auth/oidc/start`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					...(existingCookie ? {Cookie: existingCookie} : {}),
+				},
+				body: JSON.stringify({proof}),
+			});
+			const cookie = response.headers.get("set-cookie")?.split(";", 1)[0];
+			const data = (await response.json()) as {authorizationUrl?: string};
+
+			if (!response.ok || !cookie || !data.authorizationUrl) {
+				throw new Error("OIDC fixture start failed");
+			}
+
+			return {authorizationUrl: data.authorizationUrl, cookie};
+		},
+		async completeOidc(authorizationUrl, proof, cookie, afterCallback) {
+			const authorization = await fetch(authorizationUrl, {redirect: "manual"});
+			const callbackUrl = authorization.headers.get("location");
+
+			if (authorization.status !== 303 || !callbackUrl) {
+				throw new Error("OIDC fixture authorization did not redirect");
+			}
+
+			await fetch(callbackUrl, {headers: {Cookie: cookie}, redirect: "manual"});
+			await afterCallback?.();
+			const socket = io(url, {
+				path: "/socket.io/",
+				autoConnect: false,
+				reconnection: false,
+				transports: ["websocket"],
+				extraHeaders: {Cookie: cookie},
+				transportOptions: {websocket: {extraHeaders: {Cookie: cookie}}},
+			});
+			sockets.add(socket);
+			const init = waitForEvent<Init>(socket, "init");
+			const configuration = waitForEvent(socket, "configuration");
+			const pushSubscribed = waitForEvent<boolean>(socket, "push:issubscribed");
+			const result = new Promise<{status: string}>((resolve) => {
+				socket.once("auth:start", () => {
+					socket.emit("auth:oidc:complete", {proof}, resolve);
+				});
+			});
+			socket.connect();
+			const completion = await result;
+
+			if (completion.status !== "authenticated") {
+				throw new Error(`OIDC fixture completion failed: ${completion.status}`);
+			}
+
+			return {
+				socket,
+				init: await init,
+				configuration: await configuration,
+				pushSubscribed: await pushSubscribed,
+			};
+		},
 		async loginRejected(data) {
 			const socket = io(url, {
 				path: "/socket.io/",
@@ -345,6 +495,7 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 			await detached;
 		},
 		flushSaves,
+		waitForSocketEvent,
 		async stop() {
 			if (stopped) {
 				return;
@@ -376,6 +527,7 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 					clientAttach.mockRestore();
 					clientDetach.mockRestore();
 					checkForUpdates.mockRestore();
+					managerInit.mockRestore();
 					watch.mockRestore();
 					fs.rmSync(home, {recursive: true, force: true});
 				}

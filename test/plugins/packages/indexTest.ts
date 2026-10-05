@@ -1,4 +1,3 @@
-import path from "path";
 import log from "../../../server/log";
 import {expect, vi} from "vitest";
 import TestUtil from "../../util";
@@ -20,7 +19,12 @@ describe("packages", function () {
 
 		// Re-import config and set home so packages can find the fixture
 		const freshConfig = (await import("../../../server/config")).default;
-		const home = path.join(process.cwd(), "test", "fixtures", ".thelounge");
+		const home = process.env.THELOUNGE_TEST_HOME;
+
+		if (!home) {
+			throw new Error("Test fixture home was not initialized");
+		}
+
 		freshConfig.setHome(home);
 
 		packages = (await import("../../../server/plugins/packages")).default;

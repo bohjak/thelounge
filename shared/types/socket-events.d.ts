@@ -5,7 +5,14 @@ import {SharedNetwork, SharedServerOptions} from "./network";
 import {SharedMsg, LinkPreview} from "./msg";
 import {SharedUser} from "./user";
 import {SharedChangelogData} from "./changelog";
-import {SharedConfiguration, LockedSharedConfiguration} from "./config";
+import {SharedConfiguration, LockedSharedConfiguration, AuthMethod} from "./config";
+
+export type AuthBootstrap = {method: AuthMethod};
+export type OidcCompletionResult =
+	| {status: "authenticated"; user: string}
+	| {status: "denied"}
+	| {status: "expired"}
+	| {status: "retryable-error"};
 import {SearchResponse, SearchQuery} from "./storage";
 
 type Session = {
@@ -21,7 +28,7 @@ type EventHandler<T> = (data: T) => void;
 type NoPayloadEventHandler = EventHandler<void>;
 
 interface ServerToClientEvents {
-	"auth:start": (serverHash: number) => void;
+	"auth:start": (serverHash: number, bootstrap: AuthBootstrap) => void;
 	"auth:failed": NoPayloadEventHandler;
 	"auth:success": NoPayloadEventHandler;
 
@@ -127,6 +134,10 @@ type AuthPerformData =
 
 interface ClientToServerEvents {
 	"auth:perform": EventHandler<AuthPerformData>;
+	"auth:oidc:complete": (
+		data: {proof: string},
+		ack: (result: OidcCompletionResult) => void
+	) => void;
 
 	changelog: NoPayloadEventHandler;
 
@@ -191,4 +202,6 @@ interface ClientToServerEvents {
 
 interface InterServerEvents {}
 
-interface SocketData {}
+interface SocketData {
+	authenticated?: boolean;
+}

@@ -34,6 +34,16 @@ program
 			return;
 		}
 
+		if (Config.values.oidc.enable) {
+			if (cmdObj.password) {
+				log.error("OIDC accounts do not have local passwords.");
+				return;
+			}
+
+			add(manager, name, null, Boolean(cmdObj.saveLogs));
+			return;
+		}
+
 		if (cmdObj.password) {
 			add(manager, name, cmdObj.password, !!cmdObj.saveLogs);
 			return;
@@ -73,7 +83,7 @@ program
 	});
 
 function add(manager, name, password, enableLog) {
-	const hash = Helper.password.hash(password);
+	const hash = password ? Helper.password.hash(password) : null;
 	manager.addUser(name, hash, enableLog);
 
 	log.info(`User ${colors.bold(name)} created.`);

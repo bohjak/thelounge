@@ -8,7 +8,11 @@ import type {InjectionKey} from "vue";
 
 import {SettingsState} from "./settings";
 import {SearchQuery} from "../../shared/types/storage";
-import {SharedConfiguration, LockedSharedConfiguration} from "../../shared/types/config";
+import {
+	AuthMethod,
+	SharedConfiguration,
+	LockedSharedConfiguration,
+} from "../../shared/types/config";
 
 const appName = document.title;
 
@@ -42,8 +46,10 @@ export type ClientSession = {
 
 export type State = {
 	appLoaded: boolean;
+	authMethod: AuthMethod | null;
 	activeChannel?: NetChan;
 	currentUserVisibleError: string | null;
+	oidcSignInError: boolean;
 	desktopNotificationState: DesktopNotificationState;
 	isAutoCompleting: boolean;
 	isConnected: boolean;
@@ -85,8 +91,10 @@ export type State = {
 
 const state = (): State => ({
 	appLoaded: false,
+	authMethod: null,
 	activeChannel: undefined,
 	currentUserVisibleError: null,
+	oidcSignInError: false,
 	desktopNotificationState: detectDesktopNotificationState(),
 	isAutoCompleting: false,
 	isConnected: false,
@@ -198,8 +206,10 @@ const getters: Getters = {
 
 type Mutations = {
 	appLoaded(state: State): void;
+	authMethod(state: State, method: State["authMethod"]): void;
 	activeChannel(state: State, netChan: State["activeChannel"]): void;
 	currentUserVisibleError(state: State, error: State["currentUserVisibleError"]): void;
+	oidcSignInError(state: State, error: State["oidcSignInError"]): void;
 	refreshDesktopNotificationState(state: State): void;
 	isAutoCompleting(state: State, isAutoCompleting: State["isAutoCompleting"]): void;
 	isConnected(state: State, payload: State["isConnected"]): void;
@@ -236,11 +246,17 @@ const mutations: Mutations = {
 	appLoaded(state) {
 		state.appLoaded = true;
 	},
+	authMethod(state, method) {
+		state.authMethod = method;
+	},
 	activeChannel(state, netChan) {
 		state.activeChannel = netChan;
 	},
 	currentUserVisibleError(state, error) {
 		state.currentUserVisibleError = error;
+	},
+	oidcSignInError(state, error) {
+		state.oidcSignInError = error;
 	},
 	refreshDesktopNotificationState(state) {
 		state.desktopNotificationState = detectDesktopNotificationState();
