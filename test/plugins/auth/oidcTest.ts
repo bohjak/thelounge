@@ -110,6 +110,40 @@ describe("OIDC authentication", () => {
 		};
 	}
 
+	it("preserves distinct malformed-proof replies for completion and username choice", async () => {
+		provider = await createOidcProvider();
+		app = await createAuthTestApp({
+			oidc: {issuer: provider.issuer, autoProvision: true},
+		});
+		const socket = io(app.url, {
+			autoConnect: false,
+			reconnection: false,
+			transports: ["websocket"],
+		});
+		const started = new Promise<void>((resolve) => socket.once("auth:start", () => resolve()));
+		const reply = (event: "auth:oidc:complete" | "auth:oidc:username", data: unknown) =>
+			bounded(
+				new Promise<Record<string, unknown>>((resolve) => socket.emit(event, data, resolve))
+			);
+
+		try {
+			socket.connect();
+			await bounded(started);
+			expect(await reply("auth:oidc:complete", {proof: 42})).to.deep.equal({
+				status: "denied",
+			});
+			expect(
+				await reply("auth:oidc:username", {proof: 42, username: "candidate"})
+			).to.deep.equal({status: "expired"});
+			expect(await reply("auth:oidc:complete", null)).to.deep.equal({status: "denied"});
+			expect(await reply("auth:oidc:username", null)).to.deep.equal({status: "denied"});
+			expect(provider.requests.token).to.equal(0);
+			expect(Object.keys(app.readAccount("alice").sessions as object)).to.have.lengthOf(0);
+		} finally {
+			socket.disconnect();
+		}
+	});
+
 	it("denies an unbound verified identity while provisioning is disabled", async () => {
 		provider = await createOidcProvider();
 		provider.setPreferredUsername("new-user");

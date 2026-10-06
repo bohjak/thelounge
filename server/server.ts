@@ -20,7 +20,8 @@ import inputs from "./plugins/inputs";
 import Auth, {getAuthMethod} from "./plugins/auth";
 import {validateOidcConfig} from "./plugins/auth/oidc/protocol";
 import {transitionAuthMode} from "./plugins/auth/oidc/transition";
-import {completeOidc, completeOidcUsername, registerOidcRoutes} from "./plugins/auth/oidc";
+import {registerOidcRoutes} from "./plugins/auth/oidc";
+import {registerOidcSocketHandlers} from "./plugins/auth/oidc/socket";
 import {getOidcAccounts} from "./plugins/auth/oidc/accounts";
 import {VALID_TYPING_STATUSES} from "../shared/types/typing";
 import {injectServerConfig} from "./plugins/html-config";
@@ -258,63 +259,17 @@ export default async function (
 			} else {
 				socket.on("auth:perform", performAuthentication);
 
-				const completeOidcAuthentication = (data, acknowledge) => {
-					if (
-						typeof acknowledge !== "function" ||
-						socket.data.authenticated ||
-						!_.isPlainObject(data) ||
-						typeof data.proof !== "string" ||
-						!manager
-					) {
-						if (typeof acknowledge === "function") {
-							acknowledge({status: "denied"});
-						}
-
-						return;
-					}
-
-					const completion = completeOidc(manager, socket.request, data.proof);
-					acknowledge(completion.result);
-
-					if ("client" in completion) {
+				registerOidcSocketHandlers(
+					socket,
+					() => manager,
+					(client) => {
 						// Claim before any asynchronous reverse-DNS initialization. Username
 						// choice intentionally remains unclaimed until it has published or
 						// resolved an account, so the same socket can submit its choice.
 						claimAuthenticationSocket(socket);
-						completeAuthenticatedClient(socket, completion.client, "", {});
+						completeAuthenticatedClient(socket, client, "", {});
 					}
-				};
-
-				const completeOidcUsernameAuthentication = (data, acknowledge) => {
-					if (
-						typeof acknowledge !== "function" ||
-						socket.data.authenticated ||
-						!_.isPlainObject(data) ||
-						!manager
-					) {
-						if (typeof acknowledge === "function") {
-							acknowledge({status: "denied"});
-						}
-
-						return;
-					}
-
-					const completion = completeOidcUsername(
-						manager,
-						socket.request,
-						data.proof,
-						data.username
-					);
-					acknowledge(completion.result);
-
-					if ("client" in completion) {
-						claimAuthenticationSocket(socket);
-						completeAuthenticatedClient(socket, completion.client, "", {});
-					}
-				};
-
-				socket.on("auth:oidc:complete", completeOidcAuthentication);
-				socket.on("auth:oidc:username", completeOidcUsernameAuthentication);
+				);
 				socket.emit("auth:start", serverHash, {method: getAuthMethod()});
 			}
 		});
