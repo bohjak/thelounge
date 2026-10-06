@@ -10,6 +10,7 @@ const {createRequire} = require("node:module");
 
 const root = process.argv[process.argv.indexOf("--root") + 1];
 const development = process.argv.includes("--dev");
+const provision = process.argv.includes("--provision");
 if (!root) throw new Error("--root is required");
 
 const b64 = (value) => Buffer.from(value).toString("base64url");
@@ -66,6 +67,7 @@ const stopChild = async (child) => {
 		jwk.use = "sig";
 		jwk.alg = "RS256";
 		let issuer = "";
+		const accountName = provision ? "provisioned-user" : "alice";
 		let expected;
 		let tokenRequests = 0;
 		provider = http.createServer(async (request, response) => {
@@ -126,6 +128,7 @@ const stopChild = async (child) => {
 						iat: now,
 						exp: now + 60,
 						nonce: expected.nonce,
+						...(provision ? {preferred_username: accountName} : {}),
 					})
 				);
 				const signature = crypto
@@ -153,7 +156,7 @@ const stopChild = async (child) => {
 		);
 		fs.writeFileSync(
 			path.join(home, "config.js"),
-			`module.exports={host:"127.0.0.1",port:${port},transports:["websocket"],oidc:{enable:true,issuer:${JSON.stringify(
+			`module.exports={host:"127.0.0.1",port:${port},transports:["websocket"],oidc:{enable:true,autoProvision:${provision},issuer:${JSON.stringify(
 				issuer
 			)},clientId:"lounge",clientSecret:"secret",callbackUrl:"http://127.0.0.1:${port}/auth/oidc/callback",scope:"openid profile",clientAuthMethod:"client_secret_basic"}};`
 		);
@@ -167,17 +170,19 @@ const stopChild = async (child) => {
 				generatedPublic = undefined;
 			}
 		}
-		fs.writeFileSync(
-			path.join(home, "users", "alice.json"),
-			JSON.stringify({
-				password: "",
-				log: false,
-				sessions: {},
-				clientSettings: {},
-				networks: [],
-				oidc: {issuer, subject: "alice-subject"},
-			})
-		);
+		if (!provision) {
+			fs.writeFileSync(
+				path.join(home, "users", "alice.json"),
+				JSON.stringify({
+					password: "",
+					log: false,
+					sessions: {},
+					clientSettings: {},
+					networks: [],
+					oidc: {issuer, subject: "alice-subject"},
+				})
+			);
+		}
 		const start = () => {
 			const command = development
 				? [path.join(root, "node_modules", "yarn", "bin", "yarn.js"), "dev"]
@@ -255,15 +260,29 @@ const stopChild = async (child) => {
 			socket.once("connect_error", reject);
 		});
 		const result = await withTimeout(resultPromise, "OIDC completion");
-		if (result.status !== "authenticated") {
+		if (result.status !== "authenticated" || result.user !== accountName) {
 			throw new Error(
-				`OIDC completion was not authenticated: ${JSON.stringify(
+				`OIDC completion was not authenticated as ${accountName}: ${JSON.stringify(
 					result
 				)} tokenRequests=${tokenRequests}`
 			);
 		}
 		const init = await initPromise;
 		if (!init.token) throw new Error("OIDC did not issue a Lounge session");
+		if (provision) {
+			const account = JSON.parse(
+				fs.readFileSync(path.join(home, "users", `${accountName}.json`), "utf8")
+			);
+			if (
+				account.log !== true ||
+				account.oidc?.issuer !== issuer ||
+				account.oidc?.subject !== "alice-subject"
+			) {
+				throw new Error(
+					"Provisioned account did not retain its exact binding and logging default"
+				);
+			}
+		}
 		socket.close();
 		sockets.delete(socket);
 		// Client.save is deliberately debounced for five seconds; wait for its persisted-session boundary.
@@ -280,7 +299,7 @@ const stopChild = async (child) => {
 		void resumedInitPromise.catch(() => {});
 		resumed.once("auth:start", () =>
 			resumed.emit("auth:perform", {
-				user: "alice",
+				user: accountName,
 				token: init.token,
 				lastMessage: -1,
 				openChannel: 0,

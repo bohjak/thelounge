@@ -498,8 +498,15 @@ module.exports = {
 	// entering OIDC clears existing Lounge sessions, and restart after binding
 	// administration is the reliable boundary for a running server. Provider logout
 	// is not performed when a Lounge session ends.
+	//
+	// Set `autoProvision` to `true` only to let verified OIDC identities create new
+	// Lounge accounts. It is disabled by default. A string ID Token
+	// `preferred_username` is only a suggestion: missing, invalid, or already-used
+	// suggestions require the person to choose an available Lounge username. Existing
+	// accounts are never linked by username or email.
 	oidc: {
 		enable: false,
+		autoProvision: false,
 		issuer: "",
 		clientId: "",
 		clientSecret: "",

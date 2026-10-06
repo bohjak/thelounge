@@ -1,7 +1,12 @@
+import {clearOidcProof} from "../oidc";
 import {store} from "../store";
 import socket from "../socket";
 
-socket.on("disconnect", handleDisconnect);
+socket.on("disconnect", function (data) {
+	clearOidcProof();
+	store.commit("resetOidcSignIn");
+	handleDisconnect(data);
+});
 socket.on("connect_error", handleDisconnect);
 socket.on("error", handleDisconnect);
 

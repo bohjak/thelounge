@@ -3,7 +3,7 @@ import storage from "../localStorage";
 import {router, navigate} from "../router";
 import {store} from "../store";
 import location from "../location";
-import {completeOidc, hasPendingOidcProof} from "../oidc";
+import {clearOidcProof, completeOidc, hasPendingOidcProof} from "../oidc";
 let lastServerHash: number | null = null;
 
 declare global {
@@ -19,6 +19,8 @@ socket.on("auth:success", function () {
 
 socket.on("auth:failed", async function () {
 	storage.remove("token");
+	clearOidcProof();
+	store.commit("resetOidcSignIn");
 
 	if (store.state.appLoaded) {
 		return reloadPage("Authentication failed, reloading…");
@@ -39,6 +41,14 @@ socket.on("auth:start", async function (serverHash, bootstrap = {method: "local"
 
 	if (bootstrap.method === "oidc" && hasPendingOidcProof()) {
 		const result = await completeOidc();
+
+		if (result.status === "username-required") {
+			store.commit("oidcUsernameChoice", result);
+			await showSignIn();
+			return;
+		}
+
+		store.commit("resetOidcSignIn");
 
 		if (result.status !== "authenticated") {
 			store.commit("oidcSignInError", true);

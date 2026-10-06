@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 
 import Config from "../../../config";
@@ -22,6 +23,22 @@ export function isOidcIdentity(value: unknown): value is OidcIdentity {
 
 export function matchesIdentity(binding: OidcIdentity, identity: OidcIdentity) {
 	return binding.issuer === identity.issuer && binding.subject === identity.subject;
+}
+
+export type OidcAccountResolution =
+	| {status: "bound"; name: string}
+	| {status: "created"; name: string}
+	| {status: "invalid"}
+	| {status: "taken"}
+	| {status: "failed"};
+
+/** Validates names used only for newly provisioned OIDC accounts. */
+export function validProvisionedName(name: unknown): name is string {
+	return (
+		typeof name === "string" &&
+		/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name) &&
+		!/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)
+	);
 }
 
 function readUser(name: string): UserConfig {
@@ -82,6 +99,80 @@ export function findBoundAccount(identity: OidcIdentity) {
 	return getOidcAccounts().find(
 		(account) => account.binding && matchesIdentity(account.binding, identity)
 	);
+}
+
+/**
+ * Resolves an exact existing binding or synchronously creates a new private account file.
+ * Callers must supply all loaded account names. The no-overwrite hard-link publication protects
+ * same-process callers, but does not add cross-process writer coordination.
+ */
+export function resolveOrProvisionAccount(
+	identity: OidcIdentity,
+	name: unknown,
+	loadedAccountNames: Iterable<string>
+): OidcAccountResolution {
+	const accounts = getOidcAccounts();
+	const existing = accounts.find(
+		(account) => account.binding && matchesIdentity(account.binding, identity)
+	);
+
+	// Existing bindings retain their canonical name, including legacy names that
+	// do not meet the provisioning-name policy.
+	if (existing) {
+		return {status: "bound", name: existing.name};
+	}
+
+	if (!validProvisionedName(name)) {
+		return {status: "invalid"};
+	}
+
+	const canonicalName = name.toLowerCase();
+	const taken =
+		accounts.some((account) => account.name.toLowerCase() === canonicalName) ||
+		Array.from(loadedAccountNames).some(
+			(loadedName) => loadedName.toLowerCase() === canonicalName
+		);
+
+	if (taken) {
+		return {status: "taken"};
+	}
+
+	const user: UserConfig = {
+		password: "",
+		log: true,
+		sessions: {},
+		clientSettings: {},
+		networks: [],
+		oidc: {issuer: identity.issuer, subject: identity.subject},
+	};
+
+	const userPath = Config.getUserConfigPath(name);
+	const temporaryPath = `${userPath}.${crypto.randomUUID()}.tmp`;
+
+	try {
+		fs.writeFileSync(temporaryPath, JSON.stringify(user, null, "\t"), {
+			encoding: "utf8",
+			flag: "wx",
+			mode: 0o600,
+		});
+		fs.linkSync(temporaryPath, userPath);
+	} catch (error: any) {
+		try {
+			fs.unlinkSync(temporaryPath);
+		} catch {
+			// The temporary file was never created or was already cleaned up.
+		}
+
+		return {status: error?.code === "EEXIST" ? "taken" : "failed"};
+	}
+
+	try {
+		fs.unlinkSync(temporaryPath);
+	} catch {
+		// The account is already published; leave a failed cleanup for later removal.
+	}
+
+	return {status: "created", name};
 }
 
 export function bindAccount(name: string, identity: OidcIdentity, revokeSessions: boolean) {

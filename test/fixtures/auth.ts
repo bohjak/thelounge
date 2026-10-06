@@ -28,6 +28,8 @@ type AuthTestAppOptions = {
 	oidc?: {
 		issuer: string;
 		clientAuthMethod?: "client_secret_basic" | "client_secret_post";
+		autoProvision?: boolean;
+		unbound?: boolean;
 		additionalAccount?: {name: string; subject: string};
 	};
 	webirc?: boolean;
@@ -60,6 +62,7 @@ type AuthTestApp = {
 	) => Promise<Login>;
 	loginRejected: (data: Record<string, unknown>) => Promise<void>;
 	readAccount: (user: string) => Record<string, unknown>;
+	accountNames: () => string[];
 	disconnect: (socket: Socket) => Promise<void>;
 	flushSaves: () => void;
 	waitForSocketEvent: (event: string) => Promise<void>;
@@ -162,6 +165,7 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 	Config.values.webirc = options.webirc ? ({} as any) : null;
 	Config.values.ldap.enable = Boolean(options.ldap);
 	Config.values.oidc.enable = Boolean(options.oidc);
+	Config.values.oidc.autoProvision = Boolean(options.oidc?.autoProvision);
 
 	if (options.oidc) {
 		Config.values.oidc.issuer = options.oidc.issuer;
@@ -180,7 +184,7 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 	} else if (!options.public) {
 		writeLocalAccount(home, "alice", "correct-password");
 
-		if (options.oidc) {
+		if (options.oidc && !options.oidc.unbound) {
 			const bindings = [{name: "alice", subject: "alice-subject"}];
 
 			if (options.oidc.additionalAccount) {
@@ -374,6 +378,12 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 		>;
 	};
 
+	const accountNames = () =>
+		fs
+			.readdirSync(usersPath)
+			.filter((name) => name.endsWith(".json"))
+			.map((name) => name.slice(0, -5));
+
 	let stopped = false;
 
 	return {
@@ -483,6 +493,7 @@ export async function createAuthTestApp(options: AuthTestAppOptions = {}): Promi
 			}
 		},
 		readAccount,
+		accountNames,
 		async disconnect(socket) {
 			if (!socket.connected) {
 				return;

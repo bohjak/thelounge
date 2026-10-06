@@ -9,6 +9,11 @@ export type OidcTransactionValues = {
 	codeVerifier: string;
 };
 
+export type VerifiedOidcIdentity = {
+	identity: OidcIdentity;
+	suggestedUsername?: string;
+};
+
 let configuration: Promise<oidc.Configuration> | undefined;
 let retryAfter = 0;
 
@@ -171,7 +176,7 @@ export async function createAuthorization(transaction: OidcTransactionValues) {
 export async function exchangeCode(
 	callback: URL,
 	transaction: OidcTransactionValues
-): Promise<OidcIdentity> {
+): Promise<VerifiedOidcIdentity> {
 	const config = await getConfiguration();
 	const tokens = await oidc.authorizationCodeGrant(config, callback, {
 		pkceCodeVerifier: transaction.codeVerifier,
@@ -190,7 +195,13 @@ export async function exchangeCode(
 		throw new Error("OIDC ID Token did not contain the configured issuer and a subject");
 	}
 
-	return {issuer: Config.values.oidc.issuer, subject: claims.sub};
+	return {
+		identity: {issuer: Config.values.oidc.issuer, subject: claims.sub},
+		// This optional display suggestion is deliberately the only profile claim
+		// retained after verification. It is never an account lookup key.
+		suggestedUsername:
+			typeof claims.preferred_username === "string" ? claims.preferred_username : undefined,
+	};
 }
 
 export function newTransactionValues(): OidcTransactionValues {

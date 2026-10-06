@@ -11,6 +11,14 @@ type OidcCompletionResult =
 	| {status: "expired"}
 	| {status: "retryable-error"};
 
+export type OidcProvisioningResult =
+	| OidcCompletionResult
+	| {
+			status: "username-required";
+			suggestedUsername?: string;
+			error?: "invalid" | "taken";
+	  };
+
 function getProof() {
 	try {
 		const proof = sessionStorage.getItem(proofKey);
@@ -18,6 +26,95 @@ function getProof() {
 	} catch {
 		return undefined;
 	}
+}
+
+export function clearOidcProof() {
+	try {
+		sessionStorage.removeItem(proofKey);
+	} catch {
+		// Storage failures have no recoverable client-side state.
+	}
+}
+
+function validResult(result: unknown): OidcProvisioningResult {
+	if (!result || typeof result !== "object" || !("status" in result)) {
+		return {status: "retryable-error"};
+	}
+
+	if (
+		result.status === "authenticated" &&
+		"user" in result &&
+		typeof result.user === "string" &&
+		result.user
+	) {
+		return {status: "authenticated", user: result.user};
+	}
+
+	if (
+		result.status === "denied" ||
+		result.status === "expired" ||
+		result.status === "retryable-error"
+	) {
+		return {status: result.status};
+	}
+
+	if (
+		result.status === "username-required" &&
+		(!("suggestedUsername" in result) || typeof result.suggestedUsername === "string") &&
+		(!("error" in result) || result.error === "invalid" || result.error === "taken")
+	) {
+		return {
+			status: "username-required",
+			...("suggestedUsername" in result ? {suggestedUsername: result.suggestedUsername} : {}),
+			...("error" in result ? {error: result.error} : {}),
+		};
+	}
+
+	return {status: "retryable-error"};
+}
+
+function isTerminal(result: OidcProvisioningResult) {
+	return result.status !== "username-required";
+}
+
+function completeRequest(proof: string, username?: string) {
+	return new Promise<OidcProvisioningResult>((resolve) => {
+		let settled = false;
+		const timeout = window.setTimeout(
+			() => finish({status: "retryable-error"}),
+			completionTimeout
+		);
+		const disconnected = () => finish({status: "retryable-error"});
+
+		function finish(response: unknown) {
+			if (settled) {
+				return;
+			}
+
+			settled = true;
+			const result = validResult(response);
+			window.clearTimeout(timeout);
+			socket.off("disconnect", disconnected);
+
+			if (result.status === "authenticated") {
+				storage.set("user", result.user);
+			}
+
+			if (isTerminal(result)) {
+				clearOidcProof();
+			}
+
+			resolve(result);
+		}
+
+		socket.once("disconnect", disconnected);
+
+		if (username === undefined) {
+			socket.emit("auth:oidc:complete", {proof}, finish);
+		} else {
+			socket.emit("auth:oidc:username", {proof, username}, finish);
+		}
+	});
 }
 
 export async function startOidc() {
@@ -44,12 +141,7 @@ export async function startOidc() {
 
 		window.location.assign(data.authorizationUrl);
 	} catch (error) {
-		try {
-			sessionStorage.removeItem(proofKey);
-		} catch {
-			// Storage failures have no recoverable client-side state.
-		}
-
+		clearOidcProof();
 		throw error;
 	}
 }
@@ -58,42 +150,22 @@ export function completeOidc() {
 	const proof = getProof();
 
 	if (!proof) {
-		return Promise.resolve<{status: "retryable-error"}>({status: "retryable-error"});
+		clearOidcProof();
+		return Promise.resolve<OidcProvisioningResult>({status: "retryable-error"});
 	}
 
-	return new Promise<OidcCompletionResult>((resolve) => {
-		let settled = false;
-		const timeout = window.setTimeout(
-			() => finish({status: "retryable-error"}),
-			completionTimeout
-		);
-		const disconnected = () => finish({status: "retryable-error"});
+	return completeRequest(proof);
+}
 
-		function finish(result: OidcCompletionResult) {
-			if (settled) {
-				return;
-			}
+export function submitOidcUsername(username: string) {
+	const proof = getProof();
 
-			settled = true;
-			window.clearTimeout(timeout);
-			socket.off("disconnect", disconnected);
+	if (!proof) {
+		clearOidcProof();
+		return Promise.resolve<OidcProvisioningResult>({status: "retryable-error"});
+	}
 
-			if (result.status === "authenticated") {
-				storage.set("user", result.user);
-			}
-
-			try {
-				sessionStorage.removeItem(proofKey);
-			} catch {
-				// The result remains authoritative even if storage cleanup fails.
-			}
-
-			resolve(result);
-		}
-
-		socket.once("disconnect", disconnected);
-		socket.emit("auth:oidc:complete", {proof}, finish);
-	});
+	return completeRequest(proof, username.trim());
 }
 
 export function hasPendingOidcProof() {

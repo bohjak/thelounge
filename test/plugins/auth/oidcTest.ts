@@ -31,6 +31,47 @@ describe("OIDC authentication", () => {
 		return Promise.race([pending, timeout]).finally(() => clearTimeout(timer));
 	}
 
+	async function beginProvisioningCompletion(
+		authorizationUrl: string,
+		browserProof: string,
+		cookie: string
+	) {
+		const authorization = await fetch(authorizationUrl, {redirect: "manual"});
+		const callbackUrl = authorization.headers.get("location");
+		expect(authorization.status).to.equal(303);
+		expect(callbackUrl).to.be.a("string");
+		await fetch(callbackUrl!, {headers: {Cookie: cookie}, redirect: "manual"});
+
+		const socket = io(app!.url, {
+			autoConnect: false,
+			reconnection: false,
+			transports: ["websocket"],
+			extraHeaders: {Cookie: cookie},
+			transportOptions: {websocket: {extraHeaders: {Cookie: cookie}}},
+		});
+		const init = new Promise<{token?: string}>((resolve) => socket.once("init", resolve));
+		const result = new Promise<Record<string, unknown>>((resolve) => {
+			socket.once("auth:start", () =>
+				socket.emit("auth:oidc:complete", {proof: browserProof}, resolve)
+			);
+		});
+		socket.connect();
+
+		return {socket, init, result: await bounded(result)};
+	}
+
+	function submitUsername(
+		socket: ReturnType<typeof io>,
+		browserProof: string,
+		username: unknown
+	) {
+		return bounded(
+			new Promise<Record<string, unknown>>((resolve) =>
+				socket.emit("auth:oidc:username", {proof: browserProof, username}, resolve)
+			)
+		);
+	}
+
 	function holdFirstDns() {
 		const reverse = vi.spyOn(dns, "reverse");
 		const resolve = vi.spyOn(dns, "resolve");
@@ -68,6 +109,248 @@ describe("OIDC authentication", () => {
 			},
 		};
 	}
+
+	it("denies an unbound verified identity while provisioning is disabled", async () => {
+		provider = await createOidcProvider();
+		provider.setPreferredUsername("new-user");
+		app = await createAuthTestApp({oidc: {issuer: provider.issuer, unbound: true}});
+		const browserProof = proof();
+		const started = await app.startOidc(browserProof);
+		const completion = await beginProvisioningCompletion(
+			started.authorizationUrl,
+			browserProof,
+			started.cookie
+		);
+
+		expect(completion.result).to.deep.equal({status: "denied"});
+		completion.socket.disconnect();
+	});
+
+	it.each([
+		[undefined, undefined, undefined],
+		[42, undefined, undefined],
+		["invalid/name", "invalid/name", "invalid"],
+		["ALICE", "ALICE", "taken"],
+	] as const)(
+		"keeps verified provisioning pending for preferred_username %j",
+		async (preferredUsername, suggestedUsername, error) => {
+			provider = await createOidcProvider();
+			provider.setPreferredUsername(preferredUsername);
+			app = await createAuthTestApp({
+				oidc: {issuer: provider.issuer, autoProvision: true, unbound: true},
+			});
+			const browserProof = proof();
+			const started = await app.startOidc(browserProof);
+			const completion = await beginProvisioningCompletion(
+				started.authorizationUrl,
+				browserProof,
+				started.cookie
+			);
+
+			expect(completion.result).to.deep.equal({
+				status: "username-required",
+				...(suggestedUsername === undefined ? {} : {suggestedUsername}),
+				...(error === undefined ? {} : {error}),
+			});
+			completion.socket.disconnect();
+		}
+	);
+
+	it("provisions a free string suggestion and records only the exact identity", async () => {
+		provider = await createOidcProvider();
+		provider.setPreferredUsername("new-user");
+		app = await createAuthTestApp({
+			oidc: {issuer: provider.issuer, autoProvision: true, unbound: true},
+		});
+		const browserProof = proof();
+		const started = await app.startOidc(browserProof);
+		const completion = await beginProvisioningCompletion(
+			started.authorizationUrl,
+			browserProof,
+			started.cookie
+		);
+
+		expect(completion.result).to.deep.equal({status: "authenticated", user: "new-user"});
+		expect((await bounded(completion.init)).token).to.be.a("string");
+		expect(app.readAccount("new-user")).to.deep.include({
+			log: true,
+			oidc: {issuer: provider.issuer, subject: "alice-subject"},
+		});
+		expect(app.readAccount("new-user")).not.to.have.property("preferred_username");
+		await app.disconnect(completion.socket);
+	});
+
+	it("keeps a choice transaction through typed validation replies without extending its deadline", async () => {
+		provider = await createOidcProvider();
+		provider.setPreferredUsername("invalid/name");
+		app = await createAuthTestApp({
+			oidc: {issuer: provider.issuer, autoProvision: true, unbound: true},
+		});
+		const browserProof = proof();
+		const started = await app.startOidc(browserProof);
+		const completion = await beginProvisioningCompletion(
+			started.authorizationUrl,
+			browserProof,
+			started.cookie
+		);
+		expect(completion.result).to.deep.include({status: "username-required", error: "invalid"});
+		expect(await submitUsername(completion.socket, browserProof, "bad/name")).to.deep.equal({
+			status: "username-required",
+			suggestedUsername: "invalid/name",
+			error: "invalid",
+		});
+
+		const now = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now + 10 * 60 * 1000);
+
+		try {
+			expect(await submitUsername(completion.socket, browserProof, "new-user")).to.deep.equal(
+				{
+					status: "expired",
+				}
+			);
+		} finally {
+			dateNow.mockRestore();
+		}
+
+		completion.socket.disconnect();
+	});
+
+	it("resolves simultaneous same-identity username choices to one account", async () => {
+		provider = await createOidcProvider();
+		provider.setPreferredUsername("invalid/name");
+		app = await createAuthTestApp({
+			oidc: {issuer: provider.issuer, autoProvision: true, unbound: true},
+		});
+
+		const firstProof = proof();
+		const firstStart = await app.startOidc(firstProof);
+		const first = await beginProvisioningCompletion(
+			firstStart.authorizationUrl,
+			firstProof,
+			firstStart.cookie
+		);
+		const sameProof = proof();
+		const sameStart = await app.startOidc(sameProof);
+		const same = await beginProvisioningCompletion(
+			sameStart.authorizationUrl,
+			sameProof,
+			sameStart.cookie
+		);
+		const sameResults = await Promise.all([
+			submitUsername(first.socket, firstProof, "race-user"),
+			submitUsername(same.socket, sameProof, "RACE-USER"),
+		]);
+		expect(sameResults).to.deep.equal([
+			{status: "authenticated", user: "race-user"},
+			{status: "authenticated", user: "race-user"},
+		]);
+		await bounded(first.init);
+		await bounded(same.init);
+		await app.disconnect(first.socket);
+		await app.disconnect(same.socket);
+	});
+
+	it("allows only one of two verified identities to claim a case-colliding username", async () => {
+		provider = await createOidcProvider();
+		provider.setPreferredUsername("invalid/name");
+		app = await createAuthTestApp({
+			oidc: {issuer: provider.issuer, autoProvision: true, unbound: true},
+		});
+		const sockets: Array<ReturnType<typeof io>> = [];
+
+		try {
+			provider.setSubject("first-subject");
+			const firstProof = proof();
+			const firstStart = await app.startOidc(firstProof);
+			const first = await beginProvisioningCompletion(
+				firstStart.authorizationUrl,
+				firstProof,
+				firstStart.cookie
+			);
+			sockets.push(first.socket);
+			expect(first.result).to.deep.equal({
+				status: "username-required",
+				suggestedUsername: "invalid/name",
+				error: "invalid",
+			});
+
+			provider.setSubject("second-subject");
+			const secondProof = proof();
+			const secondStart = await app.startOidc(secondProof);
+			const second = await beginProvisioningCompletion(
+				secondStart.authorizationUrl,
+				secondProof,
+				secondStart.cookie
+			);
+			sockets.push(second.socket);
+			expect(second.result).to.deep.equal({
+				status: "username-required",
+				suggestedUsername: "invalid/name",
+				error: "invalid",
+			});
+
+			const results = await Promise.all([
+				submitUsername(first.socket, firstProof, "race-user"),
+				submitUsername(second.socket, secondProof, "RACE-USER"),
+			]);
+			const successful = results.filter((result) => result.status === "authenticated");
+			const rejected = results.filter((result) => result.status !== "authenticated");
+			expect(successful).to.have.lengthOf(1);
+			expect(rejected).to.deep.equal([
+				{
+					status: "username-required",
+					suggestedUsername: "invalid/name",
+					error: "taken",
+				},
+			]);
+
+			const winningName = successful[0].user;
+			expect(winningName).to.be.oneOf(["race-user", "RACE-USER"]);
+			await bounded(winningName === "race-user" ? first.init : second.init);
+			expect(
+				app.accountNames().filter((name) => name.toLowerCase() === "race-user")
+			).to.have.lengthOf(1);
+			const winner = app.readAccount(winningName as string);
+			const winningSubject = winningName === "race-user" ? "first-subject" : "second-subject";
+			expect(winner.oidc).to.deep.equal({
+				issuer: provider.issuer,
+				subject: winningSubject,
+			});
+			expect(Object.keys(winner.sessions as object)).to.have.lengthOf(1);
+		} finally {
+			for (const socket of sockets) {
+				socket.disconnect();
+			}
+		}
+	});
+
+	it("does not issue a session when signed-provider provisioning storage fails", async () => {
+		provider = await createOidcProvider();
+		provider.setPreferredUsername("new-user");
+		app = await createAuthTestApp({
+			oidc: {issuer: provider.issuer, autoProvision: true, unbound: true},
+		});
+		const browserProof = proof();
+		const started = await app.startOidc(browserProof);
+		const link = vi.spyOn(fs, "linkSync").mockImplementationOnce(() => {
+			throw Object.assign(new Error("disk full"), {code: "ENOSPC"});
+		});
+
+		try {
+			const completion = await beginProvisioningCompletion(
+				started.authorizationUrl,
+				browserProof,
+				started.cookie
+			);
+			expect(completion.result).to.deep.equal({status: "retryable-error"});
+			completion.socket.disconnect();
+		} finally {
+			link.mockRestore();
+		}
+
+		expect(Object.keys(app.readAccount("alice").sessions as object)).to.have.lengthOf(0);
+	});
 
 	it("completes a signed PKCE login for an exact bound identity and preserves the raw session", async () => {
 		provider = await createOidcProvider();

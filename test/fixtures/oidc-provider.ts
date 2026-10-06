@@ -17,6 +17,7 @@ export type OidcProvider = {
 	issuer: string;
 	setTokenFault: (fault: OidcFault) => void;
 	setSubject: (subject: string) => void;
+	setPreferredUsername: (value: unknown) => void;
 	requests: {discovery: number; authorization: number; token: number};
 	holdTokenExchange: () => void;
 	waitForTokenExchange: () => Promise<void>;
@@ -43,6 +44,7 @@ export async function createOidcProvider(
 	let issuer = "";
 	let fault: OidcFault = "none";
 	let subject = "alice-subject";
+	let preferredUsername: unknown;
 	let expected: {code: string; challenge: string; nonce: string} | undefined;
 	let tokenGate: Promise<void> | undefined;
 	let releaseTokenGate: (() => void) | undefined;
@@ -159,16 +161,18 @@ export async function createOidcProvider(
 				const header = base64url(
 					JSON.stringify({alg: "RS256", typ: "JWT", kid: "fixture-key"})
 				);
-				const payload = base64url(
-					JSON.stringify({
-						iss: fault === "wrong-issuer" ? `${issuer}/wrong` : issuer,
-						sub: subject,
-						aud: fault === "wrong-audience" ? "wrong-client" : "lounge",
-						iat: now,
-						exp: fault === "expired" ? now - 60 : now + 60,
-						nonce: fault === "wrong-nonce" ? "wrong" : expected.nonce,
-					})
-				);
+				const claims = {
+					iss: fault === "wrong-issuer" ? `${issuer}/wrong` : issuer,
+					sub: subject,
+					aud: fault === "wrong-audience" ? "wrong-client" : "lounge",
+					iat: now,
+					exp: fault === "expired" ? now - 60 : now + 60,
+					nonce: fault === "wrong-nonce" ? "wrong" : expected.nonce,
+					...(preferredUsername === undefined
+						? {}
+						: {preferred_username: preferredUsername}),
+				};
+				const payload = base64url(JSON.stringify(claims));
 				const signature = crypto
 					.sign(
 						"RSA-SHA256",
@@ -202,6 +206,9 @@ export async function createOidcProvider(
 		},
 		setSubject(value) {
 			subject = value;
+		},
+		setPreferredUsername(value) {
+			preferredUsername = value;
 		},
 		requests,
 		holdTokenExchange() {

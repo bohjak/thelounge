@@ -16,10 +16,19 @@ export type OidcCompletionResult =
 	| {status: "expired"}
 	| {status: "retryable-error"};
 
+export type OidcProvisioningResult =
+	| OidcCompletionResult
+	| {
+			status: "username-required";
+			suggestedUsername?: string;
+			error?: "invalid" | "taken";
+	  };
+
 type TransactionState =
 	| "awaiting-provider"
 	| "exchanging"
 	| "verified"
+	| "pending-name"
 	| "completing"
 	| "consumed"
 	| "expired"
@@ -33,6 +42,7 @@ type Transaction = OidcTransactionValues & {
 	verifiedDeadline?: number;
 	status: TransactionState;
 	identity?: OidcIdentity;
+	suggestedUsername?: string;
 };
 
 type CookieResult = {valid: boolean; value?: string};
@@ -281,12 +291,13 @@ export async function callback(request: Request, response: Response) {
 	callbackUrl.search = parameters.toString();
 
 	try {
-		const identity = await exchangeCode(callbackUrl, transaction);
+		const verified = await exchangeCode(callbackUrl, transaction);
 
 		if (transaction.status !== "exchanging" || transaction.deadline <= Date.now()) {
 			transaction.status = "expired";
 		} else {
-			transaction.identity = identity;
+			transaction.identity = verified.identity;
+			transaction.suggestedUsername = verified.suggestedUsername;
 			transaction.verifiedDeadline = Math.min(
 				transaction.deadline,
 				Date.now() + verifiedLifetime
@@ -305,7 +316,11 @@ function redirect(response: Response) {
 	return response.redirect(303, `${callbackPath()}#sign-in`);
 }
 
-export type OidcCompletionClaim = {identity: OidcIdentity; transaction: Transaction};
+export type OidcCompletionClaim = {
+	identity: OidcIdentity;
+	suggestedUsername?: string;
+	transaction: Transaction;
+};
 
 export function claimVerified(
 	proof: unknown,
@@ -333,7 +348,52 @@ export function claimVerified(
 			transaction.identity
 		) {
 			transaction.status = "completing";
-			return {identity: transaction.identity, transaction};
+			return {
+				identity: transaction.identity,
+				suggestedUsername: transaction.suggestedUsername,
+				transaction,
+			};
+		}
+	}
+}
+
+export function keepForUsernameChoice(claim: OidcCompletionClaim) {
+	// A verified transaction gets a short socket-completion deadline. Once it
+	// reaches the explicit choice state, retries remain bounded by its original
+	// provider-start deadline and never refresh it.
+	claim.transaction.status = "pending-name";
+}
+
+export function claimPendingName(
+	proof: unknown,
+	request: {headers: {cookie?: string}}
+): OidcCompletionClaim | undefined {
+	cleanup();
+
+	if (!validProof(proof)) {
+		return undefined;
+	}
+
+	const browserCookie = cookie(request);
+
+	if (!browserCookie.valid || !browserCookie.value) {
+		return undefined;
+	}
+
+	for (const transaction of transactions.values()) {
+		if (
+			transaction.browser === browserCookie.value &&
+			transaction.proofHash === digest(proof) &&
+			transaction.status === "pending-name" &&
+			transaction.deadline > Date.now() &&
+			transaction.identity
+		) {
+			transaction.status = "completing";
+			return {
+				identity: transaction.identity,
+				suggestedUsername: transaction.suggestedUsername,
+				transaction,
+			};
 		}
 	}
 }

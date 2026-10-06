@@ -63,6 +63,7 @@ type SearchDN = {
 
 export type Oidc = {
 	enable: boolean;
+	autoProvision: boolean;
 	issuer: string;
 	clientId: string;
 	clientSecret: string;

@@ -6,6 +6,7 @@ import {SharedMsg, LinkPreview} from "./msg";
 import {SharedUser} from "./user";
 import {SharedChangelogData} from "./changelog";
 import {SharedConfiguration, LockedSharedConfiguration, AuthMethod} from "./config";
+import {SearchResponse, SearchQuery} from "./storage";
 
 export type AuthBootstrap = {method: AuthMethod};
 export type OidcCompletionResult =
@@ -13,7 +14,16 @@ export type OidcCompletionResult =
 	| {status: "denied"}
 	| {status: "expired"}
 	| {status: "retryable-error"};
-import {SearchResponse, SearchQuery} from "./storage";
+
+// `username-required` retains the verified server-side identity and the fixed
+// OIDC transaction lifetime. The browser sends only its proof and chosen name.
+export type OidcProvisioningResult =
+	| OidcCompletionResult
+	| {
+			status: "username-required";
+			suggestedUsername?: string;
+			error?: "invalid" | "taken";
+	  };
 
 type Session = {
 	current: boolean;
@@ -136,7 +146,11 @@ interface ClientToServerEvents {
 	"auth:perform": EventHandler<AuthPerformData>;
 	"auth:oidc:complete": (
 		data: {proof: string},
-		ack: (result: OidcCompletionResult) => void
+		ack: (result: OidcProvisioningResult) => void
+	) => void;
+	"auth:oidc:username": (
+		data: {proof: string; username: string},
+		ack: (result: OidcProvisioningResult) => void
 	) => void;
 
 	changelog: NoPayloadEventHandler;

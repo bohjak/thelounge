@@ -50,6 +50,9 @@ export type State = {
 	activeChannel?: NetChan;
 	currentUserVisibleError: string | null;
 	oidcSignInError: boolean;
+	oidcState: "idle" | "choosing-username";
+	oidcSuggestedUsername: string;
+	oidcUsernameError: "invalid" | "taken" | null;
 	desktopNotificationState: DesktopNotificationState;
 	isAutoCompleting: boolean;
 	isConnected: boolean;
@@ -95,6 +98,9 @@ const state = (): State => ({
 	activeChannel: undefined,
 	currentUserVisibleError: null,
 	oidcSignInError: false,
+	oidcState: "idle",
+	oidcSuggestedUsername: "",
+	oidcUsernameError: null,
 	desktopNotificationState: detectDesktopNotificationState(),
 	isAutoCompleting: false,
 	isConnected: false,
@@ -210,6 +216,11 @@ type Mutations = {
 	activeChannel(state: State, netChan: State["activeChannel"]): void;
 	currentUserVisibleError(state: State, error: State["currentUserVisibleError"]): void;
 	oidcSignInError(state: State, error: State["oidcSignInError"]): void;
+	oidcUsernameChoice(
+		state: State,
+		choice: {suggestedUsername?: string; error?: "invalid" | "taken"}
+	): void;
+	resetOidcSignIn(state: State): void;
 	refreshDesktopNotificationState(state: State): void;
 	isAutoCompleting(state: State, isAutoCompleting: State["isAutoCompleting"]): void;
 	isConnected(state: State, payload: State["isConnected"]): void;
@@ -257,6 +268,17 @@ const mutations: Mutations = {
 	},
 	oidcSignInError(state, error) {
 		state.oidcSignInError = error;
+	},
+	oidcUsernameChoice(state, choice) {
+		state.oidcState = "choosing-username";
+		state.oidcSuggestedUsername = choice.suggestedUsername || "";
+		state.oidcUsernameError = choice.error || null;
+	},
+	resetOidcSignIn(state) {
+		state.oidcSignInError = false;
+		state.oidcState = "idle";
+		state.oidcSuggestedUsername = "";
+		state.oidcUsernameError = null;
 	},
 	refreshDesktopNotificationState(state) {
 		state.desktopNotificationState = detectDesktopNotificationState();

@@ -2,18 +2,23 @@ import {Express} from "express";
 
 import ClientManager from "../../../clientManager";
 import Client from "../../../client";
+import Config from "../../../config";
 import {getAuthMethod} from "../../auth";
-import {findBoundAccount} from "./accounts";
+import {findBoundAccount, resolveOrProvisionAccount} from "./accounts";
 import {
 	callback,
+	claimPendingName,
 	claimVerified,
 	failCompletion,
 	finishCompletion,
+	keepForUsernameChoice,
 	start,
+	OidcCompletionClaim,
 	OidcCompletionResult,
+	OidcProvisioningResult,
 } from "./transactions";
 
-export {OidcCompletionResult};
+export {OidcCompletionResult, OidcProvisioningResult};
 
 export function registerOidcRoutes(app: Express) {
 	app.post("/auth/oidc/start", (request, response) => {
@@ -24,11 +29,73 @@ export function registerOidcRoutes(app: Express) {
 	});
 }
 
+type Completion = {
+	result: OidcProvisioningResult;
+	user?: string;
+	client?: Client;
+};
+
+function loadResolvedAccount(
+	manager: ClientManager,
+	name: string,
+	claim: OidcCompletionClaim
+): Completion {
+	const client = manager.findClient(name) || manager.loadUser(name);
+
+	// ClientManager's lookup is case-insensitive. Do not let an on-disk case
+	// collision turn a binding or freshly published account into another client.
+	if (!client || client.name !== name) {
+		failCompletion(claim);
+		return {result: {status: "retryable-error"}};
+	}
+
+	finishCompletion(claim);
+	return {result: {status: "authenticated", user: name}, user: name, client};
+}
+
+function usernameRequired(claim: OidcCompletionClaim, error?: "invalid" | "taken"): Completion {
+	keepForUsernameChoice(claim);
+	return {
+		result: {
+			status: "username-required",
+			suggestedUsername: claim.suggestedUsername,
+			...(error ? {error} : {}),
+		},
+	};
+}
+
+function resolveProvisioning(
+	manager: ClientManager,
+	claim: OidcCompletionClaim,
+	username: unknown
+): Completion {
+	const resolution = resolveOrProvisionAccount(
+		claim.identity,
+		username,
+		manager.clients.map((client) => client.name)
+	);
+
+	if (resolution.status === "bound" || resolution.status === "created") {
+		return loadResolvedAccount(manager, resolution.name, claim);
+	}
+
+	if (resolution.status === "invalid") {
+		return usernameRequired(claim, typeof username === "string" ? "invalid" : undefined);
+	}
+
+	if (resolution.status === "taken") {
+		return usernameRequired(claim, "taken");
+	}
+
+	failCompletion(claim);
+	return {result: {status: "retryable-error"}};
+}
+
 export function completeOidc(
 	manager: ClientManager,
 	request: {headers: {cookie?: string}},
 	proof: unknown
-): {result: OidcCompletionResult; user?: string; client?: Client} {
+): Completion {
 	if (getAuthMethod() !== "oidc") {
 		return {result: {status: "denied"}};
 	}
@@ -40,24 +107,42 @@ export function completeOidc(
 	}
 
 	try {
-		const account = findBoundAccount(claim.identity);
+		if (!Config.values.oidc.autoProvision) {
+			const account = findBoundAccount(claim.identity);
 
-		if (!account) {
-			finishCompletion(claim);
-			return {result: {status: "denied"}};
+			if (!account) {
+				finishCompletion(claim);
+				return {result: {status: "denied"}};
+			}
+
+			return loadResolvedAccount(manager, account.name, claim);
 		}
 
-		const client = manager.findClient(account.name) || manager.loadUser(account.name);
+		return resolveProvisioning(manager, claim, claim.suggestedUsername);
+	} catch {
+		failCompletion(claim);
+		return {result: {status: "retryable-error"}};
+	}
+}
 
-		// ClientManager's lookup is case-insensitive. Do not let an on-disk
-		// case collision turn this binding into a different loaded account.
-		if (!client || client.name !== account.name) {
-			failCompletion(claim);
-			return {result: {status: "retryable-error"}};
-		}
+export function completeOidcUsername(
+	manager: ClientManager,
+	request: {headers: {cookie?: string}},
+	proof: unknown,
+	username: unknown
+): Completion {
+	if (getAuthMethod() !== "oidc" || !Config.values.oidc.autoProvision) {
+		return {result: {status: "denied"}};
+	}
 
-		finishCompletion(claim);
-		return {result: {status: "authenticated", user: account.name}, user: account.name, client};
+	const claim = claimPendingName(proof, request);
+
+	if (!claim) {
+		return {result: {status: "expired"}};
+	}
+
+	try {
+		return resolveProvisioning(manager, claim, username);
 	} catch {
 		failCompletion(claim);
 		return {result: {status: "retryable-error"}};
