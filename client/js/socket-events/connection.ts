@@ -1,4 +1,4 @@
-import {clearOidcProof} from "../oidc";
+import {clearOidcProof} from "../oidc-proof";
 import {store} from "../store";
 import socket from "../socket";
 

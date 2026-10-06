@@ -3,7 +3,8 @@ import storage from "../localStorage";
 import {router, navigate} from "../router";
 import {store} from "../store";
 import location from "../location";
-import {clearOidcProof, completeOidc, hasPendingOidcProof} from "../oidc";
+import {completeOidc} from "../oidc";
+import {clearOidcProof, hasPendingOidcProof} from "../oidc-proof";
 let lastServerHash: number | null = null;
 
 declare global {
@@ -41,17 +42,14 @@ socket.on("auth:start", async function (serverHash, bootstrap = {method: "local"
 
 	if (bootstrap.method === "oidc" && hasPendingOidcProof()) {
 		const result = await completeOidc();
+		store.commit("oidcSignInResult", result);
 
 		if (result.status === "username-required") {
-			store.commit("oidcUsernameChoice", result);
 			await showSignIn();
 			return;
 		}
 
-		store.commit("resetOidcSignIn");
-
 		if (result.status !== "authenticated") {
-			store.commit("oidcSignInError", true);
 			store.commit(
 				"currentUserVisibleError",
 				"OpenID Connect sign-in did not complete. Please try again."

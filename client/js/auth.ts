@@ -1,13 +1,6 @@
 import storage from "./localStorage";
 import location from "./location";
-
-function clearOidcProof() {
-	try {
-		sessionStorage.removeItem("thelounge.oidc.proof");
-	} catch {
-		// The page reload makes a storage failure non-recoverable.
-	}
-}
+import {clearOidcProof} from "./oidc-proof";
 
 export default class Auth {
 	static signout() {

@@ -1,27 +1,9 @@
 import socket from "./socket";
 import storage from "./localStorage";
+import {clearOidcProof, getOidcProof, setOidcProof} from "./oidc-proof";
 import type {OidcProvisioningResult} from "../../shared/types/socket-events";
 
-const proofKey = "thelounge.oidc.proof";
-const proofPattern = /^[A-Za-z0-9_-]{43}$/;
 const completionTimeout = 15_000;
-
-function getProof() {
-	try {
-		const proof = sessionStorage.getItem(proofKey);
-		return proof && proofPattern.test(proof) ? proof : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-export function clearOidcProof() {
-	try {
-		sessionStorage.removeItem(proofKey);
-	} catch {
-		// Storage failures have no recoverable client-side state.
-	}
-}
 
 function validResult(result: unknown): OidcProvisioningResult {
 	if (!result || typeof result !== "object" || !("status" in result)) {
@@ -113,7 +95,7 @@ export async function startOidc() {
 		.replace(/=/g, "");
 
 	try {
-		sessionStorage.setItem(proofKey, proof);
+		setOidcProof(proof);
 		const response = await fetch("auth/oidc/start", {
 			method: "POST",
 			headers: {"content-type": "application/json"},
@@ -134,7 +116,7 @@ export async function startOidc() {
 }
 
 export function completeOidc() {
-	const proof = getProof();
+	const proof = getOidcProof();
 
 	if (!proof) {
 		clearOidcProof();
@@ -145,7 +127,7 @@ export function completeOidc() {
 }
 
 export function submitOidcUsername(username: string) {
-	const proof = getProof();
+	const proof = getOidcProof();
 
 	if (!proof) {
 		clearOidcProof();
@@ -153,8 +135,4 @@ export function submitOidcUsername(username: string) {
 	}
 
 	return completeRequest(proof, username.trim());
-}
-
-export function hasPendingOidcProof() {
-	return Boolean(getProof());
 }

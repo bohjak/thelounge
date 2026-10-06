@@ -37,6 +37,14 @@ describe("Auth", function () {
 			expect(sessionStorage.removeItem.calledWith("thelounge.oidc.proof")).to.be.true;
 		});
 
+		it("should still clear local credentials and reload when proof cleanup fails", function () {
+			oidcProofRemoveStub.throws(new Error("Storage is blocked"));
+
+			Auth.signout();
+			expect(localStorageClearStub.calledOnce).to.be.true;
+			expect(locationReloadStub.calledOnce).to.be.true;
+		});
+
 		it("should reload the page", function () {
 			Auth.signout();
 			// @ts-expect-error ts-migrate(2339) FIXME: Property 'calledOnce' does not exist on type '{ ()... Remove this comment to see the full error message

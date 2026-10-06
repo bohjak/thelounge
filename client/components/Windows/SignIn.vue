@@ -178,16 +178,7 @@ export default defineComponent({
 			const result = await submitOidcUsername(chosenUsername.value);
 			inFlight.value = false;
 
-			if (result.status === "username-required") {
-				store.commit("oidcUsernameChoice", result);
-				return;
-			}
-
-			store.commit("resetOidcSignIn");
-
-			if (result.status !== "authenticated") {
-				store.commit("oidcSignInError", true);
-			}
+			store.commit("oidcSignInResult", result);
 		};
 
 		const onSubmit = (event: Event) => {

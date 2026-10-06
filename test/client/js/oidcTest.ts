@@ -11,12 +11,8 @@ const {emit, once, off, storage} = vi.hoisted(() => ({
 vi.mock("../../../client/js/socket", () => ({default: {emit, once, off}}));
 vi.mock("../../../client/js/localStorage", () => ({default: storage}));
 
-import {
-	completeOidc,
-	hasPendingOidcProof,
-	startOidc,
-	submitOidcUsername,
-} from "../../../client/js/oidc";
+import {completeOidc, startOidc, submitOidcUsername} from "../../../client/js/oidc";
+import {hasPendingOidcProof} from "../../../client/js/oidc-proof";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -147,6 +143,29 @@ describe("OIDC browser flow", () => {
 
 		await expect(completeOidc()).resolves.toEqual({status: "retryable-error"});
 		expect(hasPendingOidcProof()).to.equal(false);
+	});
+
+	it("does not contact the provider when proof storage fails", async () => {
+		const fetch = vi.spyOn(globalThis, "fetch");
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new Error("Storage is blocked");
+		});
+
+		await expect(startOidc()).rejects.toThrow("Storage is blocked");
+		expect(fetch).not.to.have.been.called;
+		expect(hasPendingOidcProof()).to.equal(false);
+	});
+
+	it("clears the proof without submitting when proof storage cannot be read", async () => {
+		sessionStorage.setItem("thelounge.oidc.proof", "a".repeat(43));
+		const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+			throw new Error("Storage is blocked");
+		});
+
+		await expect(completeOidc()).resolves.to.deep.equal({status: "retryable-error"});
+		expect(emit).not.to.have.been.called;
+		getItem.mockRestore();
+		expect(sessionStorage.getItem("thelounge.oidc.proof")).to.equal(null);
 	});
 
 	it("bounds a dropped completion acknowledgment", async () => {

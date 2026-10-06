@@ -8,6 +8,7 @@ import type {InjectionKey} from "vue";
 
 import {SettingsState} from "./settings";
 import {SearchQuery} from "../../shared/types/storage";
+import type {OidcProvisioningResult} from "../../shared/types/socket-events";
 import {
 	AuthMethod,
 	SharedConfiguration,
@@ -216,6 +217,7 @@ type Mutations = {
 	activeChannel(state: State, netChan: State["activeChannel"]): void;
 	currentUserVisibleError(state: State, error: State["currentUserVisibleError"]): void;
 	oidcSignInError(state: State, error: State["oidcSignInError"]): void;
+	oidcSignInResult(state: State, result: OidcProvisioningResult): void;
 	oidcUsernameChoice(
 		state: State,
 		choice: {suggestedUsername?: string; error?: "invalid" | "taken"}
@@ -268,6 +270,18 @@ const mutations: Mutations = {
 	},
 	oidcSignInError(state, error) {
 		state.oidcSignInError = error;
+	},
+	oidcSignInResult(state, result) {
+		if (result.status === "username-required") {
+			mutations.oidcUsernameChoice(state, result);
+			return;
+		}
+
+		mutations.resetOidcSignIn(state);
+
+		if (result.status !== "authenticated") {
+			mutations.oidcSignInError(state, true);
+		}
 	},
 	oidcUsernameChoice(state, choice) {
 		state.oidcState = "choosing-username";
