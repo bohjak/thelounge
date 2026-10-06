@@ -201,9 +201,17 @@ describe("OIDC authentication", () => {
 		});
 
 		const now = Date.now();
-		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now + 10 * 60 * 1000);
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now + 2 * 60 * 1000);
 
 		try {
+			expect(await submitUsername(completion.socket, browserProof, "bad/name")).to.deep.equal(
+				{
+					status: "username-required",
+					suggestedUsername: "invalid/name",
+					error: "invalid",
+				}
+			);
+			dateNow.mockReturnValue(now + 10 * 60 * 1000);
 			expect(await submitUsername(completion.socket, browserProof, "new-user")).to.deep.equal(
 				{
 					status: "expired",
@@ -211,9 +219,8 @@ describe("OIDC authentication", () => {
 			);
 		} finally {
 			dateNow.mockRestore();
+			completion.socket.disconnect();
 		}
-
-		completion.socket.disconnect();
 	});
 
 	it("resolves simultaneous same-identity username choices to one account", async () => {

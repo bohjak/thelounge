@@ -10,20 +10,6 @@ import {
 	OidcTransactionValues,
 } from "./protocol";
 
-export type OidcCompletionResult =
-	| {status: "authenticated"; user: string}
-	| {status: "denied"}
-	| {status: "expired"}
-	| {status: "retryable-error"};
-
-export type OidcProvisioningResult =
-	| OidcCompletionResult
-	| {
-			status: "username-required";
-			suggestedUsername?: string;
-			error?: "invalid" | "taken";
-	  };
-
 type TransactionState =
 	| "awaiting-provider"
 	| "exchanging"
@@ -322,9 +308,10 @@ export type OidcCompletionClaim = {
 	transaction: Transaction;
 };
 
-export function claimVerified(
+export function claimCompletion(
 	proof: unknown,
-	request: {headers: {cookie?: string}}
+	request: {headers: {cookie?: string}},
+	expectedState: "verified" | "pending-name"
 ): OidcCompletionClaim | undefined {
 	cleanup();
 
@@ -338,13 +325,15 @@ export function claimVerified(
 		return undefined;
 	}
 
+	const proofHash = digest(proof);
+
 	for (const transaction of transactions.values()) {
 		if (
 			transaction.browser === browserCookie.value &&
-			transaction.proofHash === digest(proof) &&
-			transaction.status === "verified" &&
+			transaction.proofHash === proofHash &&
+			transaction.status === expectedState &&
 			transaction.deadline > Date.now() &&
-			(transaction.verifiedDeadline || 0) > Date.now() &&
+			(expectedState !== "verified" || (transaction.verifiedDeadline || 0) > Date.now()) &&
 			transaction.identity
 		) {
 			transaction.status = "completing";
@@ -362,40 +351,6 @@ export function keepForUsernameChoice(claim: OidcCompletionClaim) {
 	// reaches the explicit choice state, retries remain bounded by its original
 	// provider-start deadline and never refresh it.
 	claim.transaction.status = "pending-name";
-}
-
-export function claimPendingName(
-	proof: unknown,
-	request: {headers: {cookie?: string}}
-): OidcCompletionClaim | undefined {
-	cleanup();
-
-	if (!validProof(proof)) {
-		return undefined;
-	}
-
-	const browserCookie = cookie(request);
-
-	if (!browserCookie.valid || !browserCookie.value) {
-		return undefined;
-	}
-
-	for (const transaction of transactions.values()) {
-		if (
-			transaction.browser === browserCookie.value &&
-			transaction.proofHash === digest(proof) &&
-			transaction.status === "pending-name" &&
-			transaction.deadline > Date.now() &&
-			transaction.identity
-		) {
-			transaction.status = "completing";
-			return {
-				identity: transaction.identity,
-				suggestedUsername: transaction.suggestedUsername,
-				transaction,
-			};
-		}
-	}
 }
 
 export function finishCompletion(claim: OidcCompletionClaim) {

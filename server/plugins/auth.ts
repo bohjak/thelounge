@@ -3,8 +3,9 @@ import Client from "../client";
 import ClientManager from "../clientManager";
 import log from "../log";
 import Config from "../config";
+import type {AuthMethod} from "../../shared/types/config";
 
-export type AuthMethod = "local" | "ldap" | "oidc";
+export type {AuthMethod} from "../../shared/types/config";
 
 export function getAuthMethod(): AuthMethod {
 	if (Config.values.oidc.enable) {

@@ -276,7 +276,7 @@ export default async function (
 					const completion = completeOidc(manager, socket.request, data.proof);
 					acknowledge(completion.result);
 
-					if (completion.client) {
+					if ("client" in completion) {
 						// Claim before any asynchronous reverse-DNS initialization. Username
 						// choice intentionally remains unclaimed until it has published or
 						// resolved an account, so the same socket can submit its choice.
@@ -307,7 +307,7 @@ export default async function (
 					);
 					acknowledge(completion.result);
 
-					if (completion.client) {
+					if ("client" in completion) {
 						claimAuthenticationSocket(socket);
 						completeAuthenticatedClient(socket, completion.client, "", {});
 					}

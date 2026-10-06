@@ -4,21 +4,17 @@ import ClientManager from "../../../clientManager";
 import Client from "../../../client";
 import Config from "../../../config";
 import {getAuthMethod} from "../../auth";
+import type {OidcProvisioningResult} from "../../../../shared/types/socket-events";
 import {findBoundAccount, resolveOrProvisionAccount} from "./accounts";
 import {
 	callback,
-	claimPendingName,
-	claimVerified,
+	claimCompletion,
 	failCompletion,
 	finishCompletion,
 	keepForUsernameChoice,
 	start,
 	OidcCompletionClaim,
-	OidcCompletionResult,
-	OidcProvisioningResult,
 } from "./transactions";
-
-export {OidcCompletionResult, OidcProvisioningResult};
 
 export function registerOidcRoutes(app: Express) {
 	app.post("/auth/oidc/start", (request, response) => {
@@ -29,11 +25,12 @@ export function registerOidcRoutes(app: Express) {
 	});
 }
 
-type Completion = {
-	result: OidcProvisioningResult;
-	user?: string;
-	client?: Client;
-};
+type Completion =
+	| {
+			result: Extract<OidcProvisioningResult, {status: "authenticated"}>;
+			client: Client;
+	  }
+	| {result: Exclude<OidcProvisioningResult, {status: "authenticated"}>};
 
 function loadResolvedAccount(
 	manager: ClientManager,
@@ -50,7 +47,7 @@ function loadResolvedAccount(
 	}
 
 	finishCompletion(claim);
-	return {result: {status: "authenticated", user: name}, user: name, client};
+	return {result: {status: "authenticated", user: client.name}, client};
 }
 
 function usernameRequired(claim: OidcCompletionClaim, error?: "invalid" | "taken"): Completion {
@@ -100,7 +97,7 @@ export function completeOidc(
 		return {result: {status: "denied"}};
 	}
 
-	const claim = claimVerified(proof, request);
+	const claim = claimCompletion(proof, request, "verified");
 
 	if (!claim) {
 		return {result: {status: "expired"}};
@@ -135,7 +132,7 @@ export function completeOidcUsername(
 		return {result: {status: "denied"}};
 	}
 
-	const claim = claimPendingName(proof, request);
+	const claim = claimCompletion(proof, request, "pending-name");
 
 	if (!claim) {
 		return {result: {status: "expired"}};

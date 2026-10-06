@@ -1,23 +1,10 @@
 import socket from "./socket";
 import storage from "./localStorage";
+import type {OidcProvisioningResult} from "../../shared/types/socket-events";
 
 const proofKey = "thelounge.oidc.proof";
 const proofPattern = /^[A-Za-z0-9_-]{43}$/;
 const completionTimeout = 15_000;
-
-type OidcCompletionResult =
-	| {status: "authenticated"; user: string}
-	| {status: "denied"}
-	| {status: "expired"}
-	| {status: "retryable-error"};
-
-export type OidcProvisioningResult =
-	| OidcCompletionResult
-	| {
-			status: "username-required";
-			suggestedUsername?: string;
-			error?: "invalid" | "taken";
-	  };
 
 function getProof() {
 	try {
