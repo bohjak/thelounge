@@ -85,6 +85,10 @@ export type UserConfig = {
 		isSecure?: boolean;
 	};
 	networks?: NetworkConfig[];
+	oidc?: {
+		issuer: string;
+		subject: string;
+	};
 };
 
 class Client {

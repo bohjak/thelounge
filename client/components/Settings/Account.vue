@@ -4,7 +4,7 @@
 		<SettingCard
 			v-if="
 				!store.state.serverConfiguration?.public &&
-				!store.state.serverConfiguration?.ldapEnabled
+				store.state.serverConfiguration?.authMethod === 'local'
 			"
 			title="Change password"
 			title-id="label-change-password"

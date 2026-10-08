@@ -1,3 +1,4 @@
+import fs from "fs";
 import log from "../server/log";
 import Config from "../server/config";
 import {expect, vi} from "vitest";
@@ -14,8 +15,16 @@ describe("Server", function () {
 	let logInfoStub: sinon.SinonStub<string[], void>;
 	let logWarnStub: sinon.SinonStub<string[], void>;
 	let checkForUpdatesStub: sinon.SinonStub<[manager: ClientManager], void>;
+	const watchedFiles = new Set<fs.FSWatcher>();
+	const originalWatch = fs.watch.bind(fs);
+	let watch: ReturnType<typeof vi.spyOn>;
 
 	beforeAll(async function () {
+		watch = vi.spyOn(fs, "watch").mockImplementation((...args) => {
+			const watcher = originalWatch(...args);
+			watchedFiles.add(watcher);
+			return watcher;
+		});
 		logInfoStub = sinon.stub(log, "info");
 		logWarnStub = sinon.stub(log, "warn").callsFake((...args: string[]) => {
 			// vapid.json permissions do not survive in git
@@ -42,6 +51,13 @@ describe("Server", function () {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 
 		await vi.dynamicImportSettled();
+
+		for (const watcher of watchedFiles) {
+			watcher.close();
+		}
+
+		watchedFiles.clear();
+		watch.mockRestore();
 	});
 
 	const webURL = `http://${Config.values.host}:${Config.values.port}/`;

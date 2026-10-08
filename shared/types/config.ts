@@ -3,8 +3,11 @@ export type ConfigTheme = {
 	name: string;
 	themeColor: string | null;
 };
+export type AuthMethod = "local" | "ldap" | "oidc";
+
 type SharedConfigurationBase = {
 	public: boolean;
+	authMethod: AuthMethod;
 	useHexIp: boolean;
 	prefetch: boolean;
 	fileUpload: boolean;

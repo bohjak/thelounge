@@ -41,6 +41,30 @@ jobs:
       - name: Test
         run: yarn test
 
+  oidc-minimum-runtime:
+    name: OIDC runtime on Node 22.18
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup minimum Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22.18.0"
+
+      - name: Install
+        run: yarn --frozen-lockfile --non-interactive
+
+      - name: Build
+        run: yarn build
+        env:
+          NODE_ENV: production
+
+      - name: Signed OIDC runtime smoke test
+        run: node test/fixtures/oidc-runtime.cjs --root "$GITHUB_WORKSPACE"
+
   package:
     name: Packaged install smoke test
 
@@ -74,3 +98,4 @@ jobs:
           version="$(node /tmp/thelounge-pack/package/index.js --version)"
           echo "thelounge --version => $version"
           echo "$version" | grep -Eq 'v?[0-9]+\.[0-9]+\.[0-9]+'
+          node test/fixtures/oidc-runtime.cjs --root /tmp/thelounge-pack/package

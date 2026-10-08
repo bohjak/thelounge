@@ -1,6 +1,8 @@
 coverage/
 public/
 dist/
+/.agents/tasks/
+/.playwright-cli/
 test/fixtures/.thelounge/logs/
 test/fixtures/.thelounge/certificates/
 test/fixtures/.thelounge/storage/
@@ -17,6 +19,7 @@ test/fixtures/.thelounge/sts-policies.json
 yarn.lock
 .gitignore
 .npmrc
+.yarnrc
 .npmignore
 .prettierignore
 .thelounge_home

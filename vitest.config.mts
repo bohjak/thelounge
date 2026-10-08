@@ -8,6 +8,7 @@ export default defineConfig({
 		extensions: [".ts", ".js", ".vue"],
 		alias: {
 			debug: path.resolve(import.meta.dirname, "scripts/noop.js"),
+			img: path.resolve(import.meta.dirname, "client/public/img"),
 		},
 	},
 	define: {

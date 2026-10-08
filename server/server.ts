@@ -17,7 +17,12 @@ import Config from "./config";
 import Identification from "./identification";
 import changelog from "./plugins/changelog";
 import inputs from "./plugins/inputs";
-import Auth from "./plugins/auth";
+import Auth, {getAuthMethod} from "./plugins/auth";
+import {validateOidcConfig} from "./plugins/auth/oidc/protocol";
+import {transitionAuthMode} from "./plugins/auth/oidc/transition";
+import {registerOidcRoutes} from "./plugins/auth/oidc";
+import {registerOidcSocketHandlers} from "./plugins/auth/oidc/socket";
+import {getOidcAccounts} from "./plugins/auth/oidc/accounts";
 import {VALID_TYPING_STATUSES} from "../shared/types/typing";
 import {injectServerConfig} from "./plugins/html-config";
 
@@ -74,6 +79,20 @@ export default async function (
 	})`);
 	log.info(`Configuration file: ${colors.green(Config.getConfigPath())}`);
 
+	try {
+		validateOidcConfig();
+		transitionAuthMode(getAuthMethod());
+
+		if (getAuthMethod() === "oidc") {
+			getOidcAccounts();
+		}
+	} catch (error) {
+		log.error(
+			"Invalid OIDC authentication configuration or transition state. Stopping server..."
+		);
+		throw error;
+	}
+
 	const staticOptions = {
 		redirect: false,
 		maxAge: 86400 * 1000,
@@ -83,15 +102,20 @@ export default async function (
 
 	isDev = options.dev;
 
+	app.set("env", "production").disable("x-powered-by").use(allRequests).use(addSecurityHeaders);
+
+	if (getAuthMethod() === "oidc") {
+		app.use(express.json({limit: "1kb"}));
+		registerOidcRoutes(app);
+	}
+
+	// Vite's development fallback serves index.html for unknown GET paths.
+	// OIDC callback routes must run first so code/state never reach that fallback.
 	if (options.dev) {
 		await (await import("./plugins/dev-server")).default(app);
 	}
 
-	app.set("env", "production")
-		.disable("x-powered-by")
-		.use(allRequests)
-		.use(addSecurityHeaders)
-		.get("/", indexRequest)
+	app.get("/", indexRequest)
 		.get("/service-worker.js", forceNoCacheRequest)
 		.use(express.static(Utils.getFileFromRelativeToRoot("public"), staticOptions))
 		.use("/storage/", express.static(Config.getStoragePath(), staticOptions));
@@ -234,7 +258,19 @@ export default async function (
 				performAuthentication.call(socket, {});
 			} else {
 				socket.on("auth:perform", performAuthentication);
-				socket.emit("auth:start", serverHash);
+
+				registerOidcSocketHandlers(
+					socket,
+					() => manager,
+					(client) => {
+						// Claim before any asynchronous reverse-DNS initialization. Username
+						// choice intentionally remains unclaimed until it has published or
+						// resolved an account, so the same socket can submit its choice.
+						claimAuthenticationSocket(socket);
+						completeAuthenticatedClient(socket, client, "", {});
+					}
+				);
+				socket.emit("auth:start", serverHash, {method: getAuthMethod()});
 			}
 		});
 
@@ -431,6 +467,7 @@ function initializeClient(
 	openChannel: number
 ) {
 	socket.off("auth:perform", performAuthentication);
+	socket.data.authenticated = true;
 	socket.emit("auth:success");
 
 	client.clientAttach(socket.id, token);
@@ -548,7 +585,7 @@ function initializeClient(
 		}
 	});
 
-	if (!Config.values.public && !Config.values.ldap.enable) {
+	if (!Config.values.public && getAuthMethod() === "local") {
 		socket.on("change-password", (data) => {
 			if (_.isPlainObject(data)) {
 				const old = data.old_password;
@@ -914,6 +951,7 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 		themes: themes.getAll(),
 		defaultTheme: Config.values.theme,
 		public: Config.values.public,
+		authMethod: getAuthMethod(),
 		useHexIp: Config.values.useHexIp,
 		prefetch: Config.values.prefetch,
 		fileUploadMaxFileSize: Uploader ? Uploader.getMaxFileSize() : undefined, // TODO can't be undefined?
@@ -957,15 +995,19 @@ function getClientConfiguration(): SharedConfiguration | LockedSharedConfigurati
 	return result;
 }
 
-function performAuthentication(this: Socket, data: AuthPerformData) {
-	if (!_.isPlainObject(data)) {
-		return;
-	}
+function claimAuthenticationSocket(socket: Socket) {
+	socket.data.authenticated = true;
+	socket.removeAllListeners("auth:perform");
+	socket.removeAllListeners("auth:oidc:complete");
+	socket.removeAllListeners("auth:oidc:username");
+}
 
-	const socket = this;
-	let client: Client | undefined;
-	let token: string;
-
+function completeAuthenticatedClient(
+	socket: Socket,
+	client: Client,
+	token: string,
+	data: AuthPerformData
+) {
 	const finalInit = () => {
 		let lastMessage = -1;
 
@@ -981,50 +1023,48 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			openChannel = data.openChannel;
 		}
 
-		// TODO: remove this once the logic is cleaned up
-		if (!client) {
-			throw new Error("finalInit called with undefined client, this is a bug");
-		}
-
 		initializeClient(socket, client, token, lastMessage, openChannel);
 	};
 
-	const initClient = () => {
-		if (!client) {
-			throw new Error("initClient called with undefined client");
-		}
+	// Configuration does not change during runtime of TL,
+	// and the client listens to this event only once
+	if (data && (!("hasConfig" in data) || !data.hasConfig)) {
+		socket.emit("configuration", getClientConfiguration());
 
-		// Configuration does not change during runtime of TL,
-		// and the client listens to this event only once
-		if (data && (!("hasConfig" in data) || !data.hasConfig)) {
-			socket.emit("configuration", getClientConfiguration());
+		socket.emit(
+			"push:issubscribed",
+			token && client.config.sessions[token].pushSubscription ? true : false
+		);
+	}
 
-			socket.emit(
-				"push:issubscribed",
-				token && client.config.sessions[token].pushSubscription ? true : false
-			);
-		}
+	const clientIP = getClientIp(socket);
 
-		const clientIP = getClientIp(socket);
-
-		client.config.browser = {
-			ip: clientIP,
-			isSecure: getClientSecure(socket),
-			language: getClientLanguage(socket),
-		};
-
-		// If webirc is enabled perform reverse dns lookup
-		if (Config.values.webirc === null) {
-			return finalInit();
-		}
-
-		const cb_client = client; // ensure that TS figures out that client can't be nil
-		reverseDnsLookup(clientIP, (hostname) => {
-			cb_client.config.browser!.hostname = hostname;
-
-			finalInit();
-		});
+	client.config.browser = {
+		ip: clientIP,
+		isSecure: getClientSecure(socket),
+		language: getClientLanguage(socket),
 	};
+
+	// If webirc is enabled perform reverse dns lookup
+	if (Config.values.webirc === null) {
+		return finalInit();
+	}
+
+	reverseDnsLookup(clientIP, (hostname) => {
+		client.config.browser!.hostname = hostname;
+
+		finalInit();
+	});
+}
+
+function performAuthentication(this: Socket, data: AuthPerformData) {
+	if (!_.isPlainObject(data)) {
+		return;
+	}
+
+	const socket = this;
+	let client: Client | undefined;
+	let token = "";
 
 	if (Config.values.public) {
 		client = new Client(manager!);
@@ -1037,7 +1077,7 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			cb_client.quit();
 		});
 
-		initClient();
+		completeAuthenticatedClient(socket, client, token, data);
 
 		return;
 	}
@@ -1077,7 +1117,15 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			}
 		}
 
-		initClient();
+		if (getAuthMethod() === "oidc") {
+			if (socket.data.authenticated) {
+				return;
+			}
+
+			claimAuthenticationSocket(socket);
+		}
+
+		completeAuthenticatedClient(socket, client, token, data);
 	};
 
 	client = manager!.findClient(data.user);
@@ -1092,6 +1140,11 @@ function performAuthentication(this: Socket, data: AuthPerformData) {
 			authCallback(true);
 			return;
 		}
+	}
+
+	if (getAuthMethod() === "oidc") {
+		authCallback(false);
+		return;
 	}
 
 	if (!("user" in data && "password" in data)) {

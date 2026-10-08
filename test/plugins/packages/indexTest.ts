@@ -1,4 +1,4 @@
-import path from "path";
+import fs from "fs";
 import log from "../../../server/log";
 import {expect, vi} from "vitest";
 import TestUtil from "../../util";
@@ -11,8 +11,15 @@ let packages: PackagesModule;
 
 describe("packages", function () {
 	let logInfoStub: sinon.SinonStub<string[], void>;
+	const watchedFiles = new Set<fs.FSWatcher>();
 
 	beforeEach(async function () {
+		const originalWatch = fs.watch.bind(fs);
+		vi.spyOn(fs, "watch").mockImplementation((...args) => {
+			const watcher = originalWatch(...args);
+			watchedFiles.add(watcher);
+			return watcher;
+		});
 		logInfoStub = sinon.stub(log, "info");
 
 		// Reset modules to get fresh packages state, then re-setup Config
@@ -20,13 +27,23 @@ describe("packages", function () {
 
 		// Re-import config and set home so packages can find the fixture
 		const freshConfig = (await import("../../../server/config")).default;
-		const home = path.join(process.cwd(), "test", "fixtures", ".thelounge");
+		const home = process.env.THELOUNGE_TEST_HOME;
+
+		if (!home) {
+			throw new Error("Test fixture home was not initialized");
+		}
+
 		freshConfig.setHome(home);
 
 		packages = (await import("../../../server/plugins/packages")).default;
 	});
 
 	afterEach(function () {
+		for (const watcher of watchedFiles) {
+			watcher.close();
+		}
+
+		watchedFiles.clear();
 		logInfoStub.restore();
 		vi.restoreAllMocks();
 	});

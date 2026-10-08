@@ -2,6 +2,18 @@ import colors from "../colors";
 import Client from "../client";
 import ClientManager from "../clientManager";
 import log from "../log";
+import Config from "../config";
+import type {AuthMethod} from "../../shared/types/config";
+
+export type {AuthMethod} from "../../shared/types/config";
+
+export function getAuthMethod(): AuthMethod {
+	if (Config.values.oidc.enable) {
+		return "oidc";
+	}
+
+	return Config.values.ldap.enable && !Config.values.public ? "ldap" : "local";
+}
 
 export type AuthHandler = (
 	manager: ClientManager,

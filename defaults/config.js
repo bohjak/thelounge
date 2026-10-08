@@ -490,6 +490,31 @@ module.exports = {
 		},
 	},
 
+	// ## OpenID Connect support
+	//
+	// OIDC is disabled by default. Configure an HTTPS issuer, registered callback
+	// URL ending in `/auth/oidc/callback`, and client credentials before enabling
+	// it. Bind each Lounge account to the issuer and subject with `oidc-bind`;
+	// entering OIDC clears existing Lounge sessions, and restart after binding
+	// administration is the reliable boundary for a running server. Provider logout
+	// is not performed when a Lounge session ends.
+	//
+	// Set `autoProvision` to `true` only to let verified OIDC identities create new
+	// Lounge accounts. It is disabled by default. A string ID Token
+	// `preferred_username` is only a suggestion: missing, invalid, or already-used
+	// suggestions require the person to choose an available Lounge username. Existing
+	// accounts are never linked by username or email.
+	oidc: {
+		enable: false,
+		autoProvision: false,
+		issuer: "",
+		clientId: "",
+		clientSecret: "",
+		callbackUrl: "",
+		scope: "openid profile",
+		clientAuthMethod: "client_secret_basic",
+	},
+
 	// ## Debugging settings
 
 	// The `debug` object contains several settings to enable debugging in The

@@ -61,6 +61,17 @@ type SearchDN = {
 	scope: SearchOptions["scope"];
 };
 
+export type Oidc = {
+	enable: boolean;
+	autoProvision: boolean;
+	issuer: string;
+	clientId: string;
+	clientSecret: string;
+	callbackUrl: string;
+	scope: string;
+	clientAuthMethod: "client_secret_basic" | "client_secret_post";
+};
+
 type Ldap = {
 	enable: boolean;
 	url: string;
@@ -110,6 +121,7 @@ export type ConfigType = {
 	identd: Identd;
 	oidentd?: string;
 	ldap: Ldap;
+	oidc: Oidc;
 	debug: Debug;
 	themeColor: string;
 };
@@ -142,6 +154,10 @@ class Config {
 
 	getUsersPath() {
 		return path.join(this.#homePath, "users");
+	}
+
+	getAuthModePath() {
+		return path.join(this.#homePath, "auth-mode.json");
 	}
 
 	getUserConfigPath(name: string) {
